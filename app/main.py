@@ -1,18 +1,12 @@
 from fastapi import FastAPI
-from app.llm import get_llm
-from app.schemas import ChatRequest, ChatResponse
 
-app = FastAPI(title="VyaparSathi AI Service")
-
-llm = get_llm()  # initialize once
+from app.routes.index import api_router
 
 
-@app.get("/")
-async def root():
-    return {"status": "AI service running"}
+def create_app() -> FastAPI:
+    application = FastAPI(title="VyaparSathi AI Service")
+    application.include_router(api_router)
+    return application
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    response = llm.invoke(request.message)
-    return ChatResponse(response=response.content)
+app = create_app()
