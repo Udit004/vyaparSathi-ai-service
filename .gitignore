@@ -1,0 +1,67 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python distribution files
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+
+# pyright
+.pyright/
+
+# FastAPI specific (optional logs/db)
+*.sqlite3
+*.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Mac system files
+.AppleDouble
+.LSOverride
+
+# dotenv local override
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
