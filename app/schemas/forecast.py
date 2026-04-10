@@ -8,6 +8,7 @@ class DailyValue(BaseModel):
 
 
 class ForecastSeriesInput(BaseModel):
+    store_id: str = "default_store"
     product_id: str
     product_name: str
     current_stock: float = 0
@@ -28,6 +29,7 @@ class ForecastResult(BaseModel):
     predicted_demand_7d: float
     trend_percent: float
     confidence: str
+    source: str = "unknown"
 
 
 class ForecastResponse(BaseModel):
