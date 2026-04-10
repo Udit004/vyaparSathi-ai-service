@@ -9,6 +9,7 @@ from app.schemas.forecast import (
 from app.schemas.insight import (
     InsightExplanationRequest,
     InsightExplanationResponse,
+    StoreInsightExplanationRequest,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "ForecastSeriesInput",
     "InsightExplanationRequest",
     "InsightExplanationResponse",
+    "StoreInsightExplanationRequest",
 ]

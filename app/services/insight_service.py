@@ -1,8 +1,37 @@
+import json
+import logging
 import re
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from app.lib.llm import get_llm
-from app.schemas.insight import InsightExplanationRequest, InsightExplanationResponse
+from app.schemas.insight import (
+    InsightExplanationRequest,
+    InsightExplanationResponse,
+    StoreInsightExplanationRequest,
+)
 from app.utils.forecasting import summarize_metrics
+
+
+LOGGER = logging.getLogger("uvicorn.error")
+
+
+def _invoke_llm_with_system_prompt(system_prompt: str, user_prompt: str):
+    llm = get_llm()
+
+    if not llm:
+        return None
+
+    try:
+        return llm.invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+        )
+    except Exception as exc:
+        LOGGER.warning("Gemini invocation failed, switching to local fallback: %s", exc)
+        return None
 
 
 def build_explanation_prompt(request: InsightExplanationRequest) -> str:
@@ -20,6 +49,20 @@ Return three short sections:
 
 Be concrete, operational, and avoid hype.
 """.strip()
+
+
+def build_store_explanation_prompt(request: StoreInsightExplanationRequest) -> str:
+    payload = {
+        "store_name": request.store_name,
+        "basis": request.basis,
+        "forecast_items": [item.model_dump() for item in request.forecast_items],
+        "restock_items": [item.model_dump() for item in request.restock_items],
+        "anomalies": [item.model_dump() for item in request.anomalies],
+        "insights": [item.model_dump() for item in request.insights],
+        "products": request.products,
+    }
+
+    return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
 
 
 def _normalize_content(raw_content) -> str:
@@ -66,7 +109,7 @@ def _extract_sections(raw_content: str) -> dict[str, str]:
             sections[current_key].append(stripped)
 
     return {
-        key: " ".join(values).strip()
+        key: "\n".join(values).strip()
         for key, values in sections.items()
         if values
     }
@@ -76,6 +119,7 @@ def parse_llm_explanation(
     raw_content,
     fallback: dict[str, str],
     basis: str,
+    llm_used: bool = True,
 ) -> InsightExplanationResponse:
     normalized = _normalize_content(raw_content)
     sections = _extract_sections(normalized)
@@ -99,6 +143,7 @@ def parse_llm_explanation(
         "summary": summary or fallback["summary"],
         "recommendation": recommendation or fallback["recommendation"],
         "basis": basis,
+        "llmUsed": llm_used,
     }
 
     return InsightExplanationResponse(**parsed)
@@ -108,15 +153,80 @@ def generate_insight_explanation(
     request: InsightExplanationRequest,
 ) -> InsightExplanationResponse:
     fallback = summarize_metrics(request.subject, request.metrics, request.basis)
-    llm = get_llm()
+    fallback["llmUsed"] = False
 
-    if not llm:
+    system_prompt = (
+        "You are a senior inventory analyst. Use the provided product data only. "
+        "Write a concise, practical explanation with exactly three sections: Title, Summary, Recommendation. "
+        "Avoid hype and do not mention internal implementation details."
+    )
+    prompt = build_explanation_prompt(request)
+    response = _invoke_llm_with_system_prompt(system_prompt, prompt)
+
+    if response is None:
         return InsightExplanationResponse(**fallback)
 
-    prompt = build_explanation_prompt(request)
-
     try:
-        response = llm.invoke(prompt)
         return parse_llm_explanation(response.content, fallback, request.basis)
     except Exception:
         return InsightExplanationResponse(**fallback)
+
+
+def _build_store_fallback(request: StoreInsightExplanationRequest) -> InsightExplanationResponse:
+    forecast_items = sorted(
+        request.forecast_items,
+        key=lambda item: item.predictedDemand7d,
+        reverse=True,
+    )
+    urgent_restock = [item for item in request.restock_items if item.priority == "red"]
+    anomaly_count = len(request.anomalies)
+    top_product = forecast_items[0].productName if forecast_items else request.store_name
+    summary_bits = [
+        f"{len(request.products)} products analysed",
+        f"{len(forecast_items)} forecasted items",
+        f"{len(urgent_restock)} urgent restock items",
+        f"{anomaly_count} anomalies detected",
+    ]
+
+    recommendation = (
+        f"Prioritize {urgent_restock[0].productName} immediately. "
+        if urgent_restock
+        else "No urgent restock action is required based on the current forecast window. "
+    )
+    recommendation += (
+        "Review low-selling products and compare live sales against forecasted demand to refine ordering."
+    )
+
+    return InsightExplanationResponse(
+        title=f"{request.store_name} sales overview",
+        summary=
+            f"{request.store_name} shows {', '.join(summary_bits)}. "
+            f"Top demand is currently centered on {top_product}.",
+        recommendation=recommendation,
+        basis=request.basis,
+        llmUsed=False,
+    )
+
+
+def generate_store_insight_explanation(
+    request: StoreInsightExplanationRequest,
+) -> InsightExplanationResponse:
+    system_prompt = (
+        "You are a senior retail analyst. Summarize the full store performance using the provided JSON context. "
+        "Your answer must be practical, human readable, and based only on the supplied data. "
+        "Return exactly three sections: Title, Summary, Recommendation. "
+        "In the summary, synthesize demand, restock risk, anomalies, and category patterns at store level. "
+        "In the recommendation, give concrete next actions for the store owner."
+    )
+    prompt = build_store_explanation_prompt(request)
+    response = _invoke_llm_with_system_prompt(system_prompt, prompt)
+
+    fallback = _build_store_fallback(request)
+
+    if response is None:
+        return fallback
+
+    try:
+        return parse_llm_explanation(response.content, fallback.model_dump(), request.basis)
+    except Exception:
+        return fallback
