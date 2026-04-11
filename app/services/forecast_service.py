@@ -45,6 +45,29 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _extract_prediction_scalar(raw_prediction: Any) -> float:
+    if isinstance(raw_prediction, (list, tuple)):
+        if not raw_prediction:
+            return 0.0
+        return _safe_float(raw_prediction[0])
+
+    if hasattr(raw_prediction, "item"):
+        try:
+            return _safe_float(raw_prediction.item())
+        except Exception:
+            pass
+
+    if hasattr(raw_prediction, "__len__") and hasattr(raw_prediction, "__getitem__"):
+        try:
+            if len(raw_prediction) == 0:
+                return 0.0
+            return _safe_float(raw_prediction[0])
+        except Exception:
+            return _safe_float(raw_prediction)
+
+    return _safe_float(raw_prediction)
+
+
 def _stable_id_to_float(value: Any) -> float:
     raw = str(value or "")
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
@@ -225,7 +248,7 @@ def _predict_with_model(
 
         row = [feature_map.get(column, 0.0) for column in feature_columns]
         raw_pred = model.predict([row])
-        prediction = max(0.0, _safe_float(raw_pred[0] if isinstance(raw_pred, list) else raw_pred))
+        prediction = max(0.0, _extract_prediction_scalar(raw_pred))
 
         horizon_predictions.append(prediction)
         history.append(prediction)
