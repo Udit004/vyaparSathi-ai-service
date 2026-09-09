@@ -1,19 +1,19 @@
-import logging
+import structlog
 
 from app.schemas.forecast import ForecastRequest, ForecastResponse
 from app.services.forecast_service import generate_forecast_response
 
 
-LOGGER = logging.getLogger("uvicorn.error")
+LOGGER = structlog.get_logger("vyaparsathi.ai.forecast")
 
 
 async def forecast(request: ForecastRequest) -> ForecastResponse:
     response = generate_forecast_response(request)
 
     LOGGER.info(
-        "forecast results count=%s payload=%s",
-        len(response.results),
-        response.model_dump(),
+        "forecast_completed",
+        results_count=len(response.results),
+        sources=[r.source for r in response.results],
     )
 
     return response

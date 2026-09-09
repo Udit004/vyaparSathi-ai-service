@@ -1,4 +1,4 @@
-import logging
+import structlog
 
 from app.schemas.insight import (
     InsightExplanationRequest,
@@ -11,7 +11,7 @@ from app.services.insight_service import (
 )
 
 
-LOGGER = logging.getLogger("uvicorn.error")
+LOGGER = structlog.get_logger("vyaparsathi.ai.insights")
 
 
 async def explain_insights(
@@ -20,10 +20,10 @@ async def explain_insights(
     response = generate_insight_explanation(request)
 
     LOGGER.info(
-        "insight explanation subject=%s basis=%s payload=%s",
-        request.subject,
-        request.basis,
-        response.model_dump(),
+        "insight_explanation_completed",
+        subject=request.subject,
+        basis=request.basis,
+        llm_used=response.llmUsed,
     )
 
     return response
@@ -35,10 +35,10 @@ async def explain_store_insights(
     response = generate_store_insight_explanation(request)
 
     LOGGER.info(
-        "store insight explanation store=%s basis=%s payload=%s",
-        request.store_name,
-        request.basis,
-        response.model_dump(),
+        "store_insight_explanation_completed",
+        store=request.store_name,
+        basis=request.basis,
+        llm_used=response.llmUsed,
     )
 
     return response

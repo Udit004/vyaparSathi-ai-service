@@ -1,4 +1,4 @@
-import logging
+import structlog
 from datetime import datetime, timezone
 import math
 
@@ -12,7 +12,7 @@ from app.schemas.analytics import (
 )
 
 
-LOGGER = logging.getLogger("uvicorn.error")
+LOGGER = structlog.get_logger("vyaparsathi.ai.analytics")
 DEAD_STOCK_DAYS = 30
 
 
@@ -218,9 +218,9 @@ def compute_insights(
         ))
     
     LOGGER.info(
-        "Generated insights count=%s basis_distribution=%s",
-        len(insights),
-        {insight.type: insight.basis for insight in insights}
+        "insights_generated",
+        count=len(insights),
+        basis_distribution={insight.type: insight.basis for insight in insights},
     )
     
     return GenerateInsightsResponse(
@@ -296,10 +296,10 @@ def detect_anomalies(
     anomalies = sorted(anomalies, key=lambda x: abs(x.zScore), reverse=True)
     
     LOGGER.info(
-        "Detected anomalies count=%s spike=%s drop=%s",
-        len(anomalies),
-        sum(1 for a in anomalies if a.direction == "spike"),
-        sum(1 for a in anomalies if a.direction == "drop"),
+        "anomalies_detected",
+        count=len(anomalies),
+        spike_count=sum(1 for a in anomalies if a.direction == "spike"),
+        drop_count=sum(1 for a in anomalies if a.direction == "drop"),
     )
     
     return DetectAnomaliesResponse(

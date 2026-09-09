@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import structlog
 from typing import Any, Iterator, Literal, TypedDict, cast
 
 from app.lib.llm import get_llm
@@ -12,11 +13,14 @@ except Exception:  # pragma: no cover
     END = None
     StateGraph = None
 
+LOGGER = structlog.get_logger("vyaparsathi.ai.chat")
+
 
 def generate_chat_response(request: ChatRequest) -> ChatResponse:
     llm = get_llm()
 
     if not llm:
+        LOGGER.warning("chat_llm_unavailable", reason="gemini_api_key_not_configured")
         return ChatResponse(
             response="AI chat is unavailable because the Gemini API key is not configured."
         )
@@ -137,6 +141,7 @@ def _fallback_from_context(request: CopilotRequest) -> CopilotResponse:
 def _invoke_llm_response(state: CopilotState) -> CopilotState:
     llm = get_llm()
     if not llm:
+        LOGGER.warning("copilot_llm_unavailable", reason="gemini_api_key_not_configured")
         state["fallback_used"] = True
         return state
 
@@ -161,7 +166,9 @@ def _invoke_llm_response(state: CopilotState) -> CopilotState:
         risk = str(parsed.get("risk_level", "medium")).strip().lower()
         state["risk_level"] = risk if risk in {"low", "medium", "high"} else "medium"
         state["llm_used"] = True
-    except Exception:
+        LOGGER.info("copilot_llm_success", question=state["question"][:100])
+    except Exception as exc:
+        LOGGER.warning("copilot_llm_failed", error=str(exc), question=state["question"][:100])
         state["fallback_used"] = True
 
     return state
@@ -194,6 +201,8 @@ def _run_copilot_graph(initial_state: CopilotState) -> CopilotState:
 
 
 def generate_copilot_response(request: CopilotRequest) -> CopilotResponse:
+    LOGGER.info("copilot_request", store_name=request.context.store_name, basis=request.context.basis, question_len=len(request.question))
+
     initial_state: CopilotState = {
         "question": request.question,
         "context_snapshot": _build_context_snapshot(request),
@@ -209,6 +218,7 @@ def generate_copilot_response(request: CopilotRequest) -> CopilotResponse:
     state = _run_copilot_graph(initial_state)
 
     if state["fallback_used"] and not state["llm_used"]:
+        LOGGER.info("copilot_fallback_used", store_name=request.context.store_name)
         return _fallback_from_context(request)
 
     risk_level: Literal["low", "medium", "high"] = (
@@ -217,6 +227,7 @@ def generate_copilot_response(request: CopilotRequest) -> CopilotResponse:
         else "medium"
     )
 
+    LOGGER.info("copilot_response_generated", llm_used=state["llm_used"], fallback_used=state["fallback_used"])
     return CopilotResponse(
         summary=state["summary"],
         key_signals=state["key_signals"],
@@ -262,6 +273,8 @@ def _fallback_stream_text(request: CopilotRequest) -> tuple[str, dict[str, Any]]
 
 
 def generate_copilot_stream_events(request: CopilotRequest) -> Iterator[str]:
+    LOGGER.info("copilot_stream_request", store_name=request.context.store_name, basis=request.context.basis, question_len=len(request.question))
+
     initial_state: CopilotState = {
         "question": request.question,
         "context_snapshot": _build_context_snapshot(request),
@@ -278,6 +291,7 @@ def generate_copilot_stream_events(request: CopilotRequest) -> Iterator[str]:
 
     llm = get_llm()
     if not llm:
+        LOGGER.warning("copilot_stream_llm_unavailable", reason="gemini_api_key_not_configured")
         text, payload = _fallback_stream_text(request)
         for chunk in _chunk_text(text):
             yield _sse_event("token", {"text": chunk})
@@ -311,7 +325,9 @@ def generate_copilot_stream_events(request: CopilotRequest) -> Iterator[str]:
                 "fallback_used": False,
             },
         )
-    except Exception:
+        LOGGER.info("copilot_stream_completed", llm_used=True)
+    except Exception as exc:
+        LOGGER.warning("copilot_stream_failed", error=str(exc))
         text, payload = _fallback_stream_text(request)
         for chunk in _chunk_text(text):
             yield _sse_event("token", {"text": chunk})
