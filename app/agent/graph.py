@@ -26,7 +26,12 @@ Loop routing (after think node):
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
+try:
+    # langgraph-checkpoint-mongodb >= 0.2.0 (Render, PyPI latest)
+    from langgraph_checkpoint_mongodb import AsyncMongoDBSaver
+except ImportError:
+    # langgraph-checkpoint-mongodb <= 0.1.x (legacy local install)
+    from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver  # type: ignore[no-redef]
 
 from app.agent.state import VyaparAgentState
 from app.agent.nodes.think_node import think_node
