@@ -1,5 +1,5 @@
 import json
-import logging
+import structlog
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,7 +13,7 @@ from app.schemas.insight import (
 from app.utils.forecasting import summarize_metrics
 
 
-LOGGER = logging.getLogger("uvicorn.error")
+LOGGER = structlog.get_logger("vyaparsathi.ai.insights")
 
 
 def _invoke_llm_with_system_prompt(system_prompt: str, user_prompt: str):
@@ -30,7 +30,7 @@ def _invoke_llm_with_system_prompt(system_prompt: str, user_prompt: str):
             ]
         )
     except Exception as exc:
-        LOGGER.warning("Gemini invocation failed, switching to local fallback: %s", exc)
+        LOGGER.warning("gemini_invocation_failed", error=str(exc))
         return None
 
 
@@ -152,6 +152,7 @@ def parse_llm_explanation(
 def generate_insight_explanation(
     request: InsightExplanationRequest,
 ) -> InsightExplanationResponse:
+    LOGGER.info("insight_explanation_request", subject=request.subject, insight_type=request.insight_type, basis=request.basis)
     fallback = summarize_metrics(request.subject, request.metrics, request.basis)
     fallback["llmUsed"] = False
 
@@ -164,11 +165,15 @@ def generate_insight_explanation(
     response = _invoke_llm_with_system_prompt(system_prompt, prompt)
 
     if response is None:
+        LOGGER.info("insight_explanation_fallback_used", subject=request.subject)
         return InsightExplanationResponse(**fallback)
 
     try:
-        return parse_llm_explanation(response.content, fallback, request.basis)
-    except Exception:
+        result = parse_llm_explanation(response.content, fallback, request.basis)
+        LOGGER.info("insight_explanation_generated", subject=request.subject, llm_used=result.llmUsed)
+        return result
+    except Exception as exc:
+        LOGGER.warning("insight_explanation_parse_failed", subject=request.subject, error=str(exc))
         return InsightExplanationResponse(**fallback)
 
 
@@ -211,6 +216,7 @@ def _build_store_fallback(request: StoreInsightExplanationRequest) -> InsightExp
 def generate_store_insight_explanation(
     request: StoreInsightExplanationRequest,
 ) -> InsightExplanationResponse:
+    LOGGER.info("store_insight_explanation_request", store_name=request.store_name, basis=request.basis)
     system_prompt = (
         "You are a senior retail analyst. Summarize the full store performance using the provided JSON context. "
         "Your answer must be practical, human readable, and based only on the supplied data. "
@@ -224,9 +230,13 @@ def generate_store_insight_explanation(
     fallback = _build_store_fallback(request)
 
     if response is None:
+        LOGGER.info("store_insight_explanation_fallback_used", store_name=request.store_name)
         return fallback
 
     try:
-        return parse_llm_explanation(response.content, fallback.model_dump(), request.basis)
-    except Exception:
+        result = parse_llm_explanation(response.content, fallback.model_dump(), request.basis)
+        LOGGER.info("store_insight_explanation_generated", store_name=request.store_name, llm_used=result.llmUsed)
+        return result
+    except Exception as exc:
+        LOGGER.warning("store_insight_explanation_parse_failed", store_name=request.store_name, error=str(exc))
         return fallback

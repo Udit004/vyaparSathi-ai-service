@@ -9,6 +9,8 @@ from statistics import mean, pstdev
 from threading import Lock
 from typing import Any
 
+import structlog
+
 from app.schemas.forecast import ForecastRequest, ForecastResponse, ForecastResult
 from app.utils.forecasting import confidence_bucket, forecast_series
 
@@ -30,12 +32,7 @@ _MODEL_LOAD_ERROR: Exception | None = None
 _STORE_ENCODER_MAP: dict[str, float] | None = None
 _ITEM_ENCODER_MAP: dict[str, float] | None = None
 _MODEL_LOCK = Lock()
-LOGGER = logging.getLogger("vyaparsathi.ai.forecast")
-LOGGER.setLevel(logging.INFO)
-
-
-def _debug_log(message: str) -> None:
-    print(f"[FORECAST DEBUG] {message}")
+LOGGER = structlog.get_logger("vyaparsathi.ai.forecast")
 
 
 def _safe_float(value: Any) -> float:
@@ -123,32 +120,28 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
     global _STORE_ENCODER_MAP, _ITEM_ENCODER_MAP
 
     if _MODEL_LOAD_ERROR is not None:
-        LOGGER.warning("Forecast model is unavailable because a previous load attempt failed: %s", _MODEL_LOAD_ERROR)
-        _debug_log(f"model unavailable after previous failure: {_MODEL_LOAD_ERROR}")
+        LOGGER.warning(
+            "forecast_model_unavailable",
+            error=str(_MODEL_LOAD_ERROR),
+        )
         return None, None
 
     if _MODEL is not None and _FEATURE_COLUMNS is not None:
-        LOGGER.info("Forecast model already loaded and cached in memory")
-        _debug_log("model already loaded and cached in memory")
+        LOGGER.info("forecast_model_cached")
         return _MODEL, _FEATURE_COLUMNS
 
     with _MODEL_LOCK:
         if _MODEL is not None and _FEATURE_COLUMNS is not None:
-            LOGGER.info("Forecast model became available while waiting for the lock")
-            _debug_log("model became available while waiting for the lock")
+            LOGGER.info("forecast_model_cached_after_lock")
             return _MODEL, _FEATURE_COLUMNS
 
         try:
             LOGGER.info(
-                "Loading forecast artifacts from model=%s feature_columns=%s store_encoder=%s item_encoder=%s",
-                MODEL_PATH,
-                FEATURE_COLUMNS_PATH,
-                STORE_ENCODER_PATH,
-                ITEM_ENCODER_PATH,
-            )
-            _debug_log(
-                f"loading artifacts model={MODEL_PATH} feature_columns={FEATURE_COLUMNS_PATH} "
-                f"store_encoder={STORE_ENCODER_PATH} item_encoder={ITEM_ENCODER_PATH}"
+                "loading_forecast_artifacts",
+                model_path=str(MODEL_PATH),
+                feature_columns_path=str(FEATURE_COLUMNS_PATH),
+                store_encoder_path=str(STORE_ENCODER_PATH),
+                item_encoder_path=str(ITEM_ENCODER_PATH),
             )
             if CatBoostRegressor is None:
                 raise RuntimeError("catboost package is not installed")
@@ -175,20 +168,14 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
             _STORE_ENCODER_MAP = _load_encoder_map(STORE_ENCODER_PATH)
             _ITEM_ENCODER_MAP = _load_encoder_map(ITEM_ENCODER_PATH)
             LOGGER.info(
-                "Forecast model loaded successfully with %s feature columns. store_encoder=%s item_encoder=%s",
-                len(_FEATURE_COLUMNS),
-                "yes" if _STORE_ENCODER_MAP else "no",
-                "yes" if _ITEM_ENCODER_MAP else "no",
-            )
-            _debug_log(
-                f"model loaded successfully with {len(_FEATURE_COLUMNS)} feature columns; "
-                f"store_encoder={'yes' if _STORE_ENCODER_MAP else 'no'} "
-                f"item_encoder={'yes' if _ITEM_ENCODER_MAP else 'no'}"
+                "forecast_model_loaded",
+                feature_columns_count=len(_FEATURE_COLUMNS),
+                store_encoder=bool(_STORE_ENCODER_MAP),
+                item_encoder=bool(_ITEM_ENCODER_MAP),
             )
         except Exception as exc:
             _MODEL_LOAD_ERROR = exc
-            LOGGER.exception("Forecast model load failed; fallback forecasting will be used")
-            _debug_log(f"model load failed; fallback will be used: {exc}")
+            LOGGER.exception("forecast_model_load_failed", error=str(exc))
             return None, None
 
     return _MODEL, _FEATURE_COLUMNS
@@ -269,15 +256,12 @@ def _predict_with_model(
 
 def generate_forecast_response(request: ForecastRequest) -> ForecastResponse:
     model, feature_columns = _lazy_load_artifacts()
+    source_type = "model" if model is not None and feature_columns is not None else "fallback"
     LOGGER.info(
-        "Generating forecast for %s series with horizon_days=%s using %s",
-        len(request.series),
-        request.horizon_days,
-        "model" if model is not None and feature_columns is not None else "fallback",
-    )
-    _debug_log(
-        f"generating forecast series={len(request.series)} horizon_days={request.horizon_days} "
-        f"using={'model' if model is not None and feature_columns is not None else 'fallback'}"
+        "generating_forecast",
+        series_count=len(request.series),
+        horizon_days=request.horizon_days,
+        source=source_type,
     )
     results = []
 
@@ -288,15 +272,11 @@ def generate_forecast_response(request: ForecastRequest) -> ForecastResponse:
         if model is not None and feature_columns is not None:
             anchor_date = _series_anchor_date(series.values)
             LOGGER.info(
-                "Running model forecast for store=%s product=%s history_points=%s anchor_date=%s",
-                series.store_id,
-                series.product_id,
-                len(values),
-                anchor_date,
-            )
-            _debug_log(
-                f"running model forecast store={series.store_id} product={series.product_id} "
-                f"history_points={len(values)} anchor_date={anchor_date}"
+                "running_model_forecast",
+                store_id=series.store_id,
+                product_id=series.product_id,
+                history_points=len(values),
+                anchor_date=str(anchor_date),
             )
             predicted_daily, predicted_demand, trend_percent = _predict_with_model(
                 model=model,
@@ -317,21 +297,19 @@ def generate_forecast_response(request: ForecastRequest) -> ForecastResponse:
         else:
             forecast_result = forecast_series(values, request.horizon_days)
             LOGGER.warning(
-                "Using fallback forecast for store=%s product=%s because the model is not available",
-                series.store_id,
-                series.product_id,
-            )
-            _debug_log(
-                f"using fallback for store={series.store_id} product={series.product_id} because model is unavailable"
+                "using_fallback_forecast",
+                store_id=series.store_id,
+                product_id=series.product_id,
+                reason="model_unavailable",
             )
 
         LOGGER.info(
-            "forecast source=%s store=%s product=%s demand7d=%.2f daily=%.2f",
-            source,
-            series.store_id,
-            series.product_id,
-            forecast_result["predicted_demand"],
-            forecast_result["predicted_daily_demand"],
+            "forecast_result",
+            source=source,
+            store_id=series.store_id,
+            product_id=series.product_id,
+            demand_7d=forecast_result["predicted_demand"],
+            daily_demand=forecast_result["predicted_daily_demand"],
         )
 
         results.append(
