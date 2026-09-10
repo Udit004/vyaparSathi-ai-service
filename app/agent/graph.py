@@ -26,8 +26,10 @@ Loop routing (after think node):
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
+
+# --- Version-agnostic import ---
 try:
-    # langgraph-checkpoint-mongodb >= 0.2.0 (Render, PyPI latest)
+    # langgraph-checkpoint-mongodb >= 0.2.0 (installed on Render)
     from langgraph_checkpoint_mongodb import AsyncMongoDBSaver
 except ImportError:
     # langgraph-checkpoint-mongodb <= 0.1.x (legacy local install)
