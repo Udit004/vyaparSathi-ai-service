@@ -100,6 +100,7 @@ def get_checkpointer() -> MongoDBSaver:
         db_name=settings.mongo_db_name,
         checkpoint_collection_name="agent_checkpoints",
         writes_collection_name="agent_checkpoint_writes",
+        ttl=settings.langgraph_checkpointer_ttl_seconds,
     )
 
     LOGGER.info(

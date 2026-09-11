@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     langchain_project: str = "vyaparSathi-ai"
     langchain_verbose: bool = True
     langchain_tracing_v2: bool = True
+    langgraph_checkpointer_ttl_seconds: int = 604800
 
     class Config:
         env_file = ".env"
