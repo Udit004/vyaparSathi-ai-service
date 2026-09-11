@@ -92,7 +92,7 @@ async def get_copilot(store_id: str, payload: CopilotPayload, request: Request):
     user_id = request.headers.get("x-user-id", "default_user")
 
     try:
-        checkpointer = await get_checkpointer()
+        checkpointer = get_checkpointer()
         graph = build_graph(checkpointer=checkpointer)
 
         initial_state = make_initial_state(
