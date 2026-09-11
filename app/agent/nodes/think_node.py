@@ -29,6 +29,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         loop=loop,
         store_id=store_id,
         user_id=user_id,
+        goal=state.get("goal"),
         goal_status=state.get("goal_status"),
         pending_tool_calls_count=len(state.get("pending_tool_calls", [])),
         tool_results_accumulated=len(state.get("tool_results", [])),
@@ -55,10 +56,18 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     available = [t for t in state.get("available_tools", []) if t not in tools_called]
     results_so_far = state.get("tool_results", [])
 
+    # Extract/normalize goal on first loop
+    current_goal = state.get("goal", "")
+    goal_status = state.get("goal_status", "pending")
+    if not current_goal and goal_status == "pending":
+        current_goal = f"Answer the user's question: {state.get('user_prompt', '')}"
+        goal_status = "in_progress"
+
     sys_content = (
         f"You are Vyapar Copilot, an AI assistant for Indian retail stores.\n"
         f"Store ID: {store_id}\n"
         f"User's question: \"{state.get('user_prompt', '')}\"\n"
+        f"Goal: {current_goal}\n"
         f"Current loop: {loop + 1} / {state.get('max_loops', 5)}\n\n"
     )
 
@@ -134,7 +143,8 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             "pending_tool_calls": pending_calls,
             "tools_called_this_loop": tool_names,
             "messages": [response],
-            "goal_status": "in_progress" if state.get("goal_status") == "pending" else state.get("goal_status"),
+            "goal": current_goal,
+            "goal_status": goal_status,
         }
     else:
         LOGGER.info(
