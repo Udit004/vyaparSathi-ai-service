@@ -157,12 +157,14 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         
         return {
             "goal_status": "complete",
+            "goal": current_goal,
             "messages": [response],
             "final_answer": final_text,
             "response_metadata": {
                 "loops_taken": loop,
                 "tools_used": tools_used,
                 "goal_status": "complete",
+                "goal": current_goal,
                 "forced_stop": is_final_loop,
                 "memory_loaded": {
                     "user": state.get("user_memory_loaded", False),
