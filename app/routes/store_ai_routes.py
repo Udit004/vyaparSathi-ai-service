@@ -128,7 +128,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
 
     async def event_generator():
         try:
-            checkpointer = await get_checkpointer()
+            checkpointer = get_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
 
             initial_state = make_initial_state(
