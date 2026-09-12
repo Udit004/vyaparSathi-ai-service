@@ -8,7 +8,8 @@ LangGraph graph assembly for the Vyapar Copilot agent.
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.mongodb import AsyncMongoDBSaver, MongoDBSaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 
 from app.agent.state import VyaparAgentState
 from app.agent.nodes.think_node import think_node

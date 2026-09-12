@@ -10,7 +10,8 @@ Uses:
 
 Current API:
 
-    from langgraph.checkpoint.mongodb import AsyncMongoDBSaver, MongoDBSaver
+    from langgraph.checkpoint.mongodb import MongoDBSaver
+    from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 
 The checkpointer is initialized once during FastAPI application startup
 and shared across all agent runs.
@@ -29,7 +30,8 @@ import structlog
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 
-from langgraph.checkpoint.mongodb import AsyncMongoDBSaver, MongoDBSaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 
 from app.config.settings import get_settings
 
