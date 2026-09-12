@@ -14,7 +14,8 @@ Endpoints:
 """
 
 import json
-from fastapi import APIRouter, Request, HTTPException
+import uuid
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any
@@ -23,7 +24,6 @@ from app.services.aggregation_service import (
     get_forecast_for_store,
     get_restock_for_store,
     get_insights_for_store,
-    get_store_products,
 )
 
 router = APIRouter(tags=["store_ai"])
@@ -77,43 +77,10 @@ async def get_product_insight(store_id: str, product_id: str):
 # Copilot — agent-powered endpoints
 # ---------------------------------------------------------------------------
 
-class CopilotPayload(BaseModel):
-    question: str
-
 class CopilotStreamPayload(BaseModel):
     message: str
+    session_id: str | None = None
 
-
-@router.post("/{store_id}/copilot", response_model=ApiResponse)
-async def get_copilot(store_id: str, payload: CopilotPayload, request: Request):
-    """LangGraph agent Copilot endpoint (non-streaming)."""
-    from app.agent import build_graph, get_checkpointer, make_initial_state
-
-    user_id = request.headers.get("x-user-id", "default_user")
-
-    try:
-        checkpointer = get_checkpointer()
-        graph = build_graph(checkpointer=checkpointer)
-
-        initial_state = make_initial_state(
-            user_id=user_id,
-            store_id=store_id,
-            user_prompt=payload.question,
-        )
-
-        config = {"configurable": {"thread_id": f"{user_id}:{store_id}"}}
-        final_state = await graph.ainvoke(initial_state, config=config)
-
-        return ApiResponse(
-            data={
-                "answer": final_state.get("final_answer", ""),
-                "metadata": final_state.get("response_metadata", {}),
-            },
-            message="Copilot response generated successfully",
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{store_id}/copilot/stream")
@@ -122,13 +89,18 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     LangGraph agent Copilot endpoint (streaming SSE).
     Connects to the frontend's EventSource/fetch stream.
     """
-    from app.agent import build_graph, get_checkpointer, make_initial_state
+    from app.agent import build_graph, get_async_checkpointer, make_initial_state
+
+    session_id = payload.session_id
+    if not session_id:
+        session_id = str(uuid.uuid4())
 
     user_id = request.headers.get("x-user-id", "default_user")
+    thread_id = f"{user_id}:{store_id}:{session_id}"
 
     async def event_generator():
         try:
-            checkpointer = get_checkpointer()
+            checkpointer = get_async_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
 
             initial_state = make_initial_state(
@@ -137,7 +109,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 user_prompt=payload.message,
             )
 
-            config = {"configurable": {"thread_id": f"{user_id}:{store_id}"}}
+            config = {"configurable": {"thread_id": thread_id}}
 
             # Stream execution events
             async for event in graph.astream_events(initial_state, config=config, version="v2"):

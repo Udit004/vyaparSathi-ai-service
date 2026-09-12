@@ -21,7 +21,7 @@ from app.routes.index import api_router
 from app.services.forecast_service import _lazy_load_artifacts
 
 from app.agent.checkpointer import (
-    get_checkpointer,
+    get_async_checkpointer,
     close_checkpointer,
 )
 
@@ -126,11 +126,11 @@ async def lifespan(application: FastAPI):
     # -----------------------------------------------------------------------
     # LangGraph MongoDB Checkpointer
     #
-    # get_checkpointer() is synchronous.
-    # It creates the application-wide MongoClient and MongoDBSaver.
+    # Streaming graph execution requires AsyncMongoDBSaver because
+    # LangGraph calls async checkpoint methods during astream_events().
     # -----------------------------------------------------------------------
 
-    application.state.checkpointer = get_checkpointer()
+    application.state.checkpointer = get_async_checkpointer()
 
     logger.info(
         "langgraph_checkpointer_initialized"
