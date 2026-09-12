@@ -155,12 +155,14 @@ class VyaparAgentState(TypedDict):
     """
     LangGraph checkpoint thread identifier.
 
-    Strategy: ``"{user_id}:{store_id}"``
-    This creates one permanent, persistent session per (user, store) pair.
-    The full graph state is checkpointed to MongoDB after each loop so the
-    agent can resume if interrupted.
+    Strategy: ``"{user_id}:{store_id}:{chat_id}"`` where ``chat_id`` is a
+    UUID identifying one logical chat. Each new chat gets a fresh
+    ``thread_id`` so the agent starts with a clean context window.
+    Checkpoints are persisted to MongoDB via the LangGraph checkpointer.
 
-    Derived automatically in make_initial_state().
+    Derived automatically in make_initial_state() when not provided
+    explicitly (falls back to ``"{user_id}:{store_id}"`` for one permanent
+    session per user/store pair).
     """
 
     # ──────────────────────────────────────────────────────────────────────
@@ -470,6 +472,7 @@ def make_initial_state(
     user_id: str,
     store_id: str,
     user_prompt: str,
+    thread_id: str | None = None,
 ) -> VyaparAgentState:
     """
     Create a clean VyaparAgentState for a new agent run.
@@ -478,17 +481,23 @@ def make_initial_state(
         user_id:     Authenticated user ID (from x-user-id header).
         store_id:    Store being queried (from URL path param).
         user_prompt: Raw user question/instruction.
+        thread_id:   Optional explicit LangGraph checkpoint thread id.
+                     If omitted, derived as "{user_id}:{store_id}" — one
+                     permanent session per (user, store) pair.
 
     Returns:
         A fully initialized VyaparAgentState ready for graph.invoke().
 
     Note:
-        thread_id is derived as "{user_id}:{store_id}" — one permanent
-        session per (user, store) pair persisted via MongoDB checkpointer.
+        When thread_id is provided (the normal case for chat-based
+        conversations), it should be formatted as
+        "{user_id}:{store_id}:{chat_id}" so each chat gets its own
+        isolated checkpoint and context window.
     """
     from langchain_core.messages import HumanMessage
 
-    thread_id = f"{user_id}:{store_id}"
+    if not thread_id:
+        thread_id = f"{user_id}:{store_id}"
 
     return VyaparAgentState(
         # 1. Identity

@@ -69,12 +69,15 @@ def get_checkpointer() -> MongoDBSaver:
 
         {
             "configurable": {
-                "thread_id": "{user_id}:{store_id}"
+                "thread_id": "{user_id}:{store_id}:{chat_id}"
             }
         }
 
-    This allows each (user, store) pair to maintain its own persistent
-    LangGraph conversation state across HTTP requests.
+    Each logical chat gets its own ``chat_id`` (UUID). Starting a new chat
+    creates a fresh ``thread_id`` so the agent starts with a clean context
+    window. The chat history (user/assistant messages) is additionally
+    persisted in the ``agent_chats`` and ``agent_chat_messages`` collections
+    by ``app/services/chat_history_service.py``.
 
     Returns:
         MongoDBSaver:
