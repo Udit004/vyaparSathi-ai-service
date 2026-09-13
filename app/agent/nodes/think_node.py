@@ -13,7 +13,16 @@ import structlog
 
 from app.agent.state import VyaparAgentState, ToolCall
 from app.lib.llm import get_llm
+from app.lib.summarizer import summarize
 from app.agent.tools.registry import VYAPAR_TOOLS
+from app.agent.prompts.system_prompts import (
+    build_agent_base,
+    MEMORY_WARNING,
+    build_tool_synthesis,
+    FIRST_LOOP,
+    build_available_tools,
+)
+from app.agent.prompts.summarizer_prompts import SUMMARIZER_HISTORY_INSTRUCTION
 from langchain_core.messages import SystemMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.think")
@@ -83,12 +92,12 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         current_goal = f"Answer the user's question: {state.get('user_prompt', '')}"
         goal_status = "in_progress"
 
-    sys_content = (
-        f"You are Vyapar Copilot, an AI assistant for Indian retail stores.\n"
-        f"Store ID: {store_id}\n"
-        f"User's question: \"{state.get('user_prompt', '')}\"\n"
-        f"Goal: {current_goal}\n"
-        f"Current loop: {loop + 1} / {max_loops}\n\n"
+    sys_content = build_agent_base(
+        store_id=store_id,
+        user_prompt=state.get("user_prompt", ""),
+        current_goal=current_goal,
+        loop=loop,
+        max_loops=max_loops,
     )
 
     # Inject memory context if available
@@ -107,47 +116,38 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         # It is NOT a substitute for live tool data. Any question about
         # inventory, sales, forecasts, restock, or insights MUST call the
         # relevant tools — memory may be stale and will not have current numbers.
-        sys_content += (
-            "WARNING: The long-term memory above contains user preferences and store "
-            "knowledge only. It does NOT contain current inventory, sales, forecast, "
-            "or insight data. If the user's question requires any of that data, you "
-            "MUST call the relevant tool(s) to fetch live data. Do NOT answer from "
-            "memory alone — memory is stale by design and will give incorrect results.\n\n"
-        )
+        sys_content += MEMORY_WARNING
 
     if results_so_far:
-        import json
-        sys_content += (
-            f"You have already gathered data from {len(results_so_far)} tool call(s). "
-            f"If you have enough information to fully answer the user's question, "
-            f"respond directly WITHOUT calling any more tools. "
-            f"Synthesize the gathered data into a comprehensive, actionable response. "
-            f"Be specific — reference actual numbers from the data. "
-            f"Format clearly with bullet points or sections if appropriate.\n\n"
-        )
-        # Inject the context buckets for the LLM to synthesize
-        inv = state.get("inventory_context", {})
-        sal = state.get("sales_context", {})
-        fct = state.get("forecast_context", {})
-        ins = state.get("insights_context", [])
-        
-        sys_content += (
-            f"<inventory_data>\n{json.dumps(inv, default=str)}\n</inventory_data>\n\n"
-            f"<sales_data>\n{json.dumps(sal, default=str)}\n</sales_data>\n\n"
-            f"<forecast_data>\n{json.dumps(fct, default=str)}\n</forecast_data>\n\n"
-            f"<insights>\n{json.dumps(ins, default=str)}\n</insights>\n\n"
+        sys_content += build_tool_synthesis(
+            results_so_far=results_so_far,
+            inventory_context=state.get("inventory_context", {}),
+            sales_context=state.get("sales_context", {}),
+            forecast_context=state.get("forecast_context", {}),
+            insights_context=state.get("insights_context", []),
         )
     else:
-        sys_content += (
-            f"Use the available tools to gather the data you need. "
-            f"Call only the tools that are relevant — do not over-fetch.\n\n"
-        )
+        sys_content += FIRST_LOOP
 
     if available and not is_final_loop:
-        sys_content += f"Available tools this loop: {', '.join(available)}\n"
+        sys_content += build_available_tools(available)
+
+    raw_messages = state.get("messages", [])
+    # Sliding window: keep the last 3 messages verbatim, compress everything
+    # older than that into a compact summary that gets appended to the
+    # system prompt. This prevents the LLM context window from growing
+    # without bound across loops while preserving the recent conversation
+    # flow the LLM needs for continuity.
+    #
+    # NOTE: the summary is merged into the system prompt rather than
+    # emitted as a separate SystemMessage — Gemini only allows a single
+    # system instruction at position 0.
+    window_summary, recent_messages = await _sliding_window(raw_messages, keep_last=3)
+    if window_summary:
+        sys_content = sys_content + "\n\n" + window_summary
 
     sys_msg = SystemMessage(content=sys_content)
-    messages = [sys_msg] + state["messages"]
+    messages = [sys_msg] + recent_messages
 
     LOGGER.debug(
         "think_node_invoking_llm",
@@ -293,3 +293,177 @@ def _is_conversation_meaningful(
         return False
 
     return True
+
+
+# ---------------------------------------------------------------------------
+# Sliding-window context compressor
+# ---------------------------------------------------------------------------
+
+def _message_text(msg) -> str:
+    """Extract a compact text representation of a BaseMessage."""
+    content = getattr(msg, "content", "")
+    if isinstance(content, list):
+        # Some providers return content as a list of blocks
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(block.get("text", ""))
+            else:
+                parts.append(str(block))
+        content = " ".join(parts)
+    return str(content)
+
+
+def _is_window_start_invalid(msg) -> bool:
+    """
+    Return True if ``msg`` cannot validly start the recent window.
+
+    Gemini requires the conversation after the system instruction to begin
+    with a user turn or an AI turn that does NOT contain tool_calls.
+    Specifically:
+      - A ToolMessage must follow an AI tool_call turn — it cannot start
+        the conversation.
+      - An AIMessage WITH tool_calls must follow a user turn — it cannot
+        start the conversation either.
+
+    So a window starting with either of those is invalid and the split
+    point must be walked backward.
+    """
+    msg_type = getattr(msg, "type", "") or ""
+    if msg_type == "tool":
+        return True
+    if msg_type == "ai" and getattr(msg, "tool_calls", None):
+        return True
+    return False
+
+
+def _owns_tool_response(prev_msg, cur_msg) -> bool:
+    """
+    Return True if ``prev_msg`` is an AIMessage with tool_calls and
+    ``cur_msg`` is the ToolMessage response for one of those calls.
+
+    When True, splitting between them orphans the ToolMessage — Gemini
+    requires "function response turn comes immediately after a function
+    call turn", so the pair must stay together in the recent window.
+    """
+    if getattr(prev_msg, "type", "") != "ai":
+        return False
+    tool_calls = getattr(prev_msg, "tool_calls", None) or []
+    if not tool_calls:
+        return False
+    if getattr(cur_msg, "type", "") != "tool":
+        return False
+    call_id = getattr(cur_msg, "tool_call_id", None)
+    return any(tc.get("id") == call_id for tc in tool_calls)
+
+
+async def _sliding_window(messages, *, keep_last: int = 3):
+    """
+    Compress the message list into a sliding window.
+
+    Strategy:
+      - Keep the last ``keep_last`` messages verbatim (preserves recent
+        conversation flow the LLM needs for continuity).
+      - Everything older than that is collapsed into a single compact
+        summary string that the CALLER prepends to the system prompt.
+
+    Why not a SystemMessage? Gemini (ChatGoogleGenerativeAI) only allows a
+    single system instruction at position 0 — a second SystemMessage later
+    in the list raises "Unexpected message with type SystemMessage at the
+    position 1". So the summary is returned as plain text and merged into
+    the existing system prompt by the caller.
+
+    Gemini turn-ordering constraint: the recent window must start with a
+    HumanMessage or an AIMessage WITHOUT tool_calls. An AIMessage with
+    tool_calls must follow a user turn, and a ToolMessage must follow an
+    AI tool_call turn — otherwise Gemini returns "Please ensure that
+    function call turn comes immediately after a user turn or after a
+    function response turn." To satisfy this, the window start is walked
+    backward until the first message is a valid turn starter.
+
+    Additionally, tool-call/response pairs are kept atomic: if the message
+    just before the split is an AIMessage with tool_calls and the first
+    recent message is its ToolMessage response, the split is moved back
+    one step so the pair stays together (Gemini requires the function
+    response to immediately follow the function call turn).
+
+    This is applied only to the *prompt* sent to the LLM — the full
+    message list remains in the graph state (and the checkpointer) for
+    cross-session persistence.
+
+    Args:
+        messages: list[BaseMessage] from the graph state.
+        keep_last: Number of recent messages to keep verbatim.
+
+    Returns:
+        tuple[str, list[BaseMessage]] — (summary_text, recent_messages).
+        summary_text is "" when no compression was needed.
+    """
+    if not messages:
+        return "", []
+
+    if len(messages) <= keep_last:
+        return "", list(messages)
+
+    # Compute the split point, then walk it backward so the recent window
+    # starts with a valid Gemini turn starter (human or AI without
+    # tool_calls). This preserves the required user→tool_call→tool→...
+    # alternation across the compression boundary.
+    #
+    # We also keep tool-call/response pairs atomic: if the message just
+    # before the split is an AIMessage with tool_calls and the first
+    # recent message is its ToolMessage response, walking back one
+    # step keeps the pair together (Gemini requires the function
+    # response to immediately follow the function call turn).
+    split = len(messages) - keep_last
+    while split > 0 and _is_window_start_invalid(messages[split]):
+        split -= 1
+    while (
+        split > 0
+        and _owns_tool_response(messages[split - 1], messages[split])
+    ):
+        split -= 1
+
+    # If walking back consumed the whole list, there's nothing safe to
+    # compress — return the full list verbatim.
+    if split <= 0:
+        return "", list(messages)
+
+    old = messages[:split]
+    recent = messages[split:]
+
+    # Build a compact summary of the older messages
+    tool_calls_made = []
+    raw_summary_parts = []
+    for m in old:
+        text = _message_text(m)
+        role = getattr(m, "type", "message")
+        # Truncate long tool payloads — they live in *_context buckets anyway
+        if len(text) > 400:
+            text = text[:400] + "...[truncated]"
+        raw_summary_parts.append(text)
+        # Track tool names mentioned in tool messages for the summary
+        name = getattr(m, "name", None) or getattr(m, "tool_call_id", None)
+        if name and role == "tool" and name not in tool_calls_made:
+            tool_calls_made.append(name)
+
+    raw_summary = "\n".join(raw_summary_parts)
+
+    # If the older segment is large, compress it with the small summarizer
+    # (GROQ/NVIDIA) so the sliding-window summary stays tiny.
+    if len(raw_summary) > 600:
+        compressed = await summarize(
+            raw_summary,
+            instruction=SUMMARIZER_HISTORY_INSTRUCTION,
+            max_tokens=256,
+        )
+        summary = compressed or raw_summary
+    else:
+        summary = raw_summary
+
+    header = "Earlier conversation summary (older messages compressed):"
+    summary = f"{header}\n{summary}"
+    if tool_calls_made:
+        summary += f"\nTools already used earlier: {', '.join(tool_calls_made)}"
+
+    return summary, list(recent)

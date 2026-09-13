@@ -25,6 +25,8 @@ from typing import Any, Optional
 import structlog
 
 from app.config.settings import get_settings
+from app.lib.summarizer import summarize
+from app.agent.prompts.summarizer_prompts import SUMMARIZER_MEMORY_INSTRUCTION
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory")
 
@@ -225,25 +227,88 @@ async def load_memory_context(
     user_results = await search_user_memory(user_id, user_prompt)
     store_results = await search_store_memory(store_id, user_prompt)
 
+    # Cap raw results to keep the persisted state bounded — the summary
+    # is what the LLM actually reads.
+    user_results = _cap_results(user_results)
+    store_results = _cap_results(store_results)
+
     user_prefs = {
         "raw": user_results,
-        "summary": _summarize_results(user_results),
+        "summary": await summarize_memory_results(user_results, user_prompt),
     }
     store_knowledge = {
         "raw": store_results,
-        "summary": _summarize_results(store_results),
+        "summary": await summarize_memory_results(store_results, user_prompt),
     }
 
     return user_prefs, store_knowledge
 
 
-def _summarize_results(results: list[dict]) -> str:
-    """Flatten mem0 search results into a compact text summary."""
+# ---------------------------------------------------------------------------
+# Result capping — prevents mem0 from flooding the context window
+# ---------------------------------------------------------------------------
+
+# Hard caps on how much mem0 data we surface to the LLM per session.
+# mem0 can return a large, unbounded list of entries; without these caps
+# the summary string alone can balloon to ~50K tokens and blow the
+# context window.
+_MAX_MEMORY_ENTRIES = 5
+_MAX_MEMORY_CHARS = 2_000
+_MAX_MEMORY_ENTRY_CHARS = 400
+
+
+def _cap_results(results: list[dict]) -> list[dict]:
+    """
+    Trim a mem0 result list to a bounded size.
+
+    Keeps the first ``_MAX_MEMORY_ENTRIES`` results (mem0 ranks by
+    relevance, so the head of the list is the most relevant) and truncates
+    each entry's text to a sane length.
+    """
+    if not results:
+        return []
+
+    capped = list(results[:_MAX_MEMORY_ENTRIES])
+    for i, r in enumerate(capped):
+        if isinstance(r, dict):
+            text = r.get("memory") or r.get("text")
+            if isinstance(text, str) and len(text) > _MAX_MEMORY_ENTRY_CHARS:
+                r = dict(r)
+                r["memory"] = text[:_MAX_MEMORY_ENTRY_CHARS] + "...[truncated]"
+                capped[i] = r
+    return capped
+
+
+async def summarize_memory_results(results: list[dict], query: str) -> str:
+    """
+    Produce a compact summary of mem0 search results for the LLM.
+
+    Applies hard caps first (so we never send a huge payload to the
+    summarizer), then optionally re-summarizes with a small/fast model
+    (GROQ/NVIDIA) for extra compression. Falls back to the capped
+    flatten if no summarizer is available.
+    """
+    results = _cap_results(results)
     if not results:
         return ""
+
+    flat = _flatten_results(results)
+    if len(flat) <= _MAX_MEMORY_CHARS:
+        return flat
+
+    # Use the small summarizer to compress further
+    summary = await summarize(
+        flat,
+        instruction=SUMMARIZER_MEMORY_INSTRUCTION,
+        max_tokens=200,
+    )
+    return summary or flat
+
+
+def _flatten_results(results: list[dict]) -> str:
+    """Flatten capped mem0 results into plain text (no LLM call)."""
     parts = []
     for r in results:
-        # mem0 results have a "memory" key with the text
         text = r.get("memory") or r.get("text") or str(r)
         parts.append(str(text))
     return "\n".join(parts)

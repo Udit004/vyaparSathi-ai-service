@@ -1,0 +1,19 @@
+"""
+app/agent/prompts/system_prompts/__init__.py
+============================================
+System prompt fragments injected into the main system message.
+"""
+
+from app.agent.prompts.system_prompts.agent_base import build_agent_base
+from app.agent.prompts.system_prompts.memory_warning import MEMORY_WARNING
+from app.agent.prompts.system_prompts.tool_synthesis import build_tool_synthesis
+from app.agent.prompts.system_prompts.first_loop import FIRST_LOOP
+from app.agent.prompts.system_prompts.available_tools import build_available_tools
+
+__all__ = [
+    "build_agent_base",
+    "MEMORY_WARNING",
+    "build_tool_synthesis",
+    "FIRST_LOOP",
+    "build_available_tools",
+]

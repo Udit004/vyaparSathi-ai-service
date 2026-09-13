@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # Mem0 long-term memory
     mem0_api_key: str | None = None
     mem0_enabled: bool = True
+    # Small/fast summarizer providers (OpenAI-compatible endpoints)
+    groq_api_key: str | None = None
+    nvidia_api_key: str | None = None
 
     class Config:
         env_file = ".env"
