@@ -66,7 +66,10 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     llm = get_llm()
     if not llm:
         LOGGER.error("think_node_no_llm", store_id=store_id)
-        return {"error": "LLM not configured — check GEMINI_API_KEY in .env", "goal_status": "failed"}
+        return {
+            "error": "LLM not configured — set at least one of GEMINI_API_KEY, NVIDIA_API_KEY, or GROQ_API_KEY in .env",
+            "goal_status": "failed",
+        }
 
     t0 = time.perf_counter()
     

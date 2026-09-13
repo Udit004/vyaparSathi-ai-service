@@ -11,6 +11,7 @@ pymongo
 # Gemini LLM integration + LangGraph agent
 # Let pip resolve the compatible set across the whole ecosystem
 langchain-google-genai
+langchain-openai
 langchain-core
 langgraph
 langgraph-checkpoint-mongodb==0.1.3
