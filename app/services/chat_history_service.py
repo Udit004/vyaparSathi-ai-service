@@ -296,3 +296,98 @@ async def count_messages(chat_id: str) -> int:
     """Return the total message count for a chat."""
     db = get_database()
     return await db["agent_chat_messages"].count_documents({"chat_id": chat_id})
+
+
+# ---------------------------------------------------------------------------
+# Chat title generation
+# ---------------------------------------------------------------------------
+
+# Default title used until the LLM produces a real one.
+DEFAULT_CHAT_TITLE = "New Chat"
+
+
+async def generate_chat_title(chat_id: str, user_prompt: str) -> str:
+    """
+    Generate a short, human-readable title for a chat from its first user
+    message. Falls back to a truncated version of the prompt if no LLM is
+    available.
+
+    The title is a single line, <= 60 chars, suitable for a sidebar list.
+    """
+    if not user_prompt or not user_prompt.strip():
+        return DEFAULT_CHAT_TITLE
+
+    # Fast deterministic fallback — a truncated, cleaned version of the prompt.
+    def _fallback(prompt: str) -> str:
+        cleaned = " ".join(prompt.split())  # collapse whitespace
+        if len(cleaned) <= 60:
+            return cleaned
+        return cleaned[:57] + "..."
+
+    try:
+        from app.lib.llm import get_llm
+
+        llm = get_llm()
+        if not llm:
+            return _fallback(user_prompt)
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        response = await llm.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You generate short chat titles. Given the user's first "
+                        "message, produce a concise title (5-8 words max) that "
+                        "summarizes the topic. Return ONLY the title, no quotes, "
+                        "no punctuation at the end, no explanation."
+                    )
+                ),
+                HumanMessage(content=user_prompt),
+            ]
+        )
+        title = _as_text(getattr(response, "content", "")).strip()
+        # Strip surrounding quotes if the LLM added them
+        if len(title) >= 2 and title[0] in "\"'" and title[-1] == title[0]:
+            title = title[1:-1]
+        title = " ".join(title.split())  # collapse whitespace
+        if not title:
+            return _fallback(user_prompt)
+        if len(title) > 60:
+            title = title[:57] + "..."
+        return title
+    except Exception as exc:
+        LOGGER.warning("generate_chat_title_fallback", chat_id=chat_id, error=str(exc)[:200])
+        return _fallback(user_prompt)
+
+
+async def ensure_chat_title(chat_id: str, user_prompt: str) -> str:
+    """
+    Update the chat session title if it is still the default "New Chat".
+
+    Returns the (possibly new) title. Idempotent — if the title was already
+    set to something meaningful, it is returned unchanged.
+    """
+    session = await get_chat_session(chat_id)
+    if not session:
+        return DEFAULT_CHAT_TITLE
+    if session.title and session.title != DEFAULT_CHAT_TITLE:
+        return session.title
+
+    title = await generate_chat_title(chat_id, user_prompt)
+    await update_chat_session(chat_id, title=title)
+    LOGGER.info("chat_title_generated", chat_id=chat_id, title=title)
+    return title
+
+
+def _as_text(value: Any) -> str:
+    """Coerce any LLM content value to a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_as_text(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    return str(value)

@@ -32,6 +32,7 @@ from app.services.chat_history_service import (
     list_chat_sessions,
     get_chat_history,
     soft_delete_chat_session,
+    ensure_chat_title,
 )
 from app.models.chat_history import ChatSessionModel, ChatMessageModel
 
@@ -323,10 +324,17 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     metadata={"thread_id": thread_id},
                 )
 
+            # Generate a title for new chats (first exchange) so the
+            # frontend sidebar shows a meaningful name instead of "New Chat".
+            # This runs after the assistant message is persisted so the
+            # title reflects the actual first user message.
+            chat_title = await ensure_chat_title(chat_id, payload.message)
+
             # Emit session metadata so the frontend can store the chat_id
             session_data = json.dumps({
                 "chatId": chat_id,
                 "threadId": thread_id,
+                "title": chat_title,
             })
             yield f"event: session\ndata: {session_data}\n\n"
 
