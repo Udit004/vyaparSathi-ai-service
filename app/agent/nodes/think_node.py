@@ -103,6 +103,17 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             sys_content += f"<user_preferences>\n{user_mem_summary}\n</user_preferences>\n\n"
         if store_mem_summary:
             sys_content += f"<store_knowledge>\n{store_mem_summary}\n</store_knowledge>\n\n"
+        # CRITICAL: memory is preferences / store knowledge ONLY.
+        # It is NOT a substitute for live tool data. Any question about
+        # inventory, sales, forecasts, restock, or insights MUST call the
+        # relevant tools — memory may be stale and will not have current numbers.
+        sys_content += (
+            "WARNING: The long-term memory above contains user preferences and store "
+            "knowledge only. It does NOT contain current inventory, sales, forecast, "
+            "or insight data. If the user's question requires any of that data, you "
+            "MUST call the relevant tool(s) to fetch live data. Do NOT answer from "
+            "memory alone — memory is stale by design and will give incorrect results.\n\n"
+        )
 
     if results_so_far:
         import json
