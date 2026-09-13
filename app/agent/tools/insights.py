@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
 
+from app.agent.service import fetch_store_insights
+
 # --- Schemas ---
 
 class StoreInsightsInput(BaseModel):
@@ -33,7 +35,6 @@ async def get_store_insights(store_id: str) -> StoreInsightsOutput:
     Includes: out-of-stock alerts, dead stock detection, and top revenue-generating products.
     Use this to understand the overall health of the store.
     """
-    from app.services.agent_data_service import fetch_store_insights
     items = await fetch_store_insights(store_id)
     insights = [InsightResult(**i) for i in items]
     return StoreInsightsOutput(

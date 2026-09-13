@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
 
+from app.agent.service import fetch_restock_priorities, fetch_forecast_summary
+
 # --- Schemas ---
 
 class RestockPriorityInput(BaseModel):
@@ -54,7 +56,6 @@ async def get_restock_priorities(store_id: str) -> RestockPriorityOutput:
     YELLOW means restock soon, GREEN means healthy.
     Includes avg daily sales and days-to-stockout estimates.
     """
-    from app.services.agent_data_service import fetch_restock_priorities
     items = await fetch_restock_priorities(store_id)
     priorities = [RestockItem(**i) for i in items]
     return RestockPriorityOutput(
@@ -71,7 +72,6 @@ async def get_forecast_summary(store_id: str, horizon_days: int = 7) -> Forecast
     Get a demand forecast summary for all products in the store over the given horizon.
     Includes predicted demand, current stock, and days-to-stockout estimates.
     """
-    from app.services.agent_data_service import fetch_forecast_summary
     items = await fetch_forecast_summary(store_id, horizon_days)
     return ForecastSummaryOutput(
         horizon_days=horizon_days,

@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
 
+from app.agent.service import fetch_inventory_summary, fetch_low_stock_products
+
 # --- Schemas ---
 
 class InventorySummaryInput(BaseModel):
@@ -41,7 +43,6 @@ async def get_inventory_summary(store_id: str) -> InventorySummaryOutput:
     Get a high-level summary of the store's inventory, including total products,
     low stock counts, out of stock counts, and total inventory value.
     """
-    from app.services.agent_data_service import fetch_inventory_summary
     data = await fetch_inventory_summary(store_id)
     return InventorySummaryOutput(
         total_products=data["total_products"],
@@ -59,7 +60,6 @@ async def get_low_stock_products(store_id: str, threshold: int = 10) -> LowStock
     Get a list of specific products that are running low on stock (below the given threshold).
     Useful for identifying exactly what needs to be ordered.
     """
-    from app.services.agent_data_service import fetch_low_stock_products
     items = await fetch_low_stock_products(store_id, threshold)
     return LowStockOutput(
         items=[LowStockItem(**i) for i in items],

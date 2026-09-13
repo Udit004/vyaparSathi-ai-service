@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
 
+from app.agent.service import fetch_sales_summary, fetch_top_selling_products
+
 # --- Schemas ---
 
 class SalesSummaryInput(BaseModel):
@@ -40,7 +42,6 @@ async def get_sales_summary(store_id: str, days_lookback: int = 30) -> SalesSumm
     Get a high-level summary of the store's sales over a specified period,
     including total revenue, total sales count, and average order value.
     """
-    from app.services.agent_data_service import fetch_sales_summary
     data = await fetch_sales_summary(store_id, days_lookback)
     return SalesSummaryOutput(
         total_revenue=data["total_revenue"],
@@ -56,7 +57,6 @@ async def get_top_selling_products(store_id: str, limit: int = 5, days_lookback:
     """
     Get a list of the top selling products by revenue and quantity over a specified period.
     """
-    from app.services.agent_data_service import fetch_top_selling_products
     items = await fetch_top_selling_products(store_id, limit, days_lookback)
     return TopSellingOutput(
         items=[TopSellingItem(**i) for i in items],
