@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     langchain_verbose: bool = True
     langchain_tracing_v2: bool = True
     langgraph_checkpointer_ttl_seconds: int = 604800
+    # Mem0 long-term memory
+    mem0_api_key: str | None = None
+    mem0_enabled: bool = True
 
     class Config:
         env_file = ".env"

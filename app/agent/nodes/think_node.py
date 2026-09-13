@@ -35,6 +35,25 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         tool_results_accumulated=len(state.get("tool_results", [])),
     )
 
+    # Check memory status
+    user_memory_loaded = state.get("user_memory_loaded", False)
+    store_memory_loaded = state.get("store_memory_loaded", False)
+
+    # If memory hasn't been loaded yet and we're not on the final loop,
+    # skip LLM invocation entirely — route directly to memory_query node.
+    # The LLM should only reason AFTER it has access to long-term memory.
+    if not user_memory_loaded and not store_memory_loaded:
+        max_loops = state.get("max_loops", 3)
+        is_final_loop = loop >= max_loops
+        if not is_final_loop:
+            LOGGER.info(
+                "think_node_skip_memory_not_loaded",
+                loop=loop,
+                store_id=store_id,
+                reason="routing to memory_query node before LLM invocation",
+            )
+            return {"memory_query_needed": True}
+
     llm = get_llm()
     if not llm:
         LOGGER.error("think_node_no_llm", store_id=store_id)
@@ -43,7 +62,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     t0 = time.perf_counter()
     
     # Force the LLM to output a direct response (no tools) if we hit the loop ceiling
-    is_final_loop = loop >= state.get("max_loops", 5)
+    is_final_loop = loop >= state.get("max_loops", 3)
     
     if is_final_loop:
         LOGGER.info("think_node_max_loops_reached", loop=loop, store_id=store_id)
@@ -55,6 +74,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     tools_called = state.get("tools_called_this_loop", [])
     available = [t for t in state.get("available_tools", []) if t not in tools_called]
     results_so_far = state.get("tool_results", [])
+    max_loops = state.get("max_loops", 3)
 
     # Extract/normalize goal on first loop
     current_goal = state.get("goal", "")
@@ -68,8 +88,21 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         f"Store ID: {store_id}\n"
         f"User's question: \"{state.get('user_prompt', '')}\"\n"
         f"Goal: {current_goal}\n"
-        f"Current loop: {loop + 1} / {state.get('max_loops', 5)}\n\n"
+        f"Current loop: {loop + 1} / {max_loops}\n\n"
     )
+
+    # Inject memory context if available
+    user_prefs = state.get("user_preferences", {})
+    store_knowledge = state.get("store_knowledge", {})
+    user_mem_summary = user_prefs.get("summary", "") if isinstance(user_prefs, dict) else ""
+    store_mem_summary = store_knowledge.get("summary", "") if isinstance(store_knowledge, dict) else ""
+
+    if user_mem_summary or store_mem_summary:
+        sys_content += "Long-term memory context:\n"
+        if user_mem_summary:
+            sys_content += f"<user_preferences>\n{user_mem_summary}\n</user_preferences>\n\n"
+        if store_mem_summary:
+            sys_content += f"<store_knowledge>\n{store_mem_summary}\n</store_knowledge>\n\n"
 
     if results_so_far:
         import json
@@ -155,11 +188,22 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         final_text = response.content if hasattr(response, "content") else str(response)
         tools_used = list({r["tool_name"] for r in state.get("tool_results", [])})
         
+        # Determine if this conversation is worth persisting to mem0.
+        # Skip trivial exchanges ("hi", "hello", "ok", etc.) to avoid
+        # polluting long-term memory with noise.
+        should_persist = _is_conversation_meaningful(
+            user_prompt=state.get("user_prompt", ""),
+            final_answer=final_text,
+            tools_used=tools_used,
+            loop_count=loop,
+        )
+        
         return {
             "goal_status": "complete",
             "goal": current_goal,
             "messages": [response],
             "final_answer": final_text,
+            "should_persist_memory": should_persist,
             "response_metadata": {
                 "loops_taken": loop,
                 "tools_used": tools_used,
@@ -172,3 +216,69 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
                 },
             }
         }
+
+
+# ---------------------------------------------------------------------------
+# Conversation importance classifier
+# ---------------------------------------------------------------------------
+
+# Trivial greetings / acknowledgements that should NOT be persisted
+_TRIVIAL_PATTERNS = [
+    "hi", "hello", "hey", "hi there", "hello there",
+    "ok", "okay", "yes", "no", "yeah", "nope",
+    "thanks", "thank you", "thank", "thx",
+    "good morning", "good afternoon", "good evening",
+    "how are you", "are you there", "you there",
+    "help", "help me",
+]
+
+_MIN_MEANINGFUL_LENGTH = 15
+# Minimum characters for a response to be considered substantive
+
+
+def _is_conversation_meaningful(
+    *,
+    user_prompt: str,
+    final_answer: str,
+    tools_used: list[str],
+    loop_count: int,
+) -> bool:
+    """
+    Determine whether a conversation contains enough substance to persist
+    to long-term mem0 memory.
+
+    Returns False for trivial exchanges ("hi", "hello", "ok") to avoid
+    polluting memory with noise.
+
+    Returns True when:
+        - The agent used tools (real data was gathered)
+        - The user prompt is substantive (not a greeting)
+        - The final answer is substantive (long enough, not just "sure")
+    """
+    # If tools were used, the conversation has real data — always persist
+    if tools_used:
+        return True
+
+    # Multiple loops means the agent did real reasoning work
+    if loop_count > 0:
+        return True
+
+    # Check if user prompt is trivial
+    prompt_lower = (user_prompt or "").strip().lower()
+    if prompt_lower in _TRIVIAL_PATTERNS:
+        return False
+
+    # Short prompts (< 15 chars) that aren't greetings are likely trivial
+    if len(prompt_lower) < _MIN_MEANINGFUL_LENGTH:
+        return False
+
+    # Check if the final answer is substantive
+    answer_lower = (final_answer or "").strip().lower()
+    if len(answer_lower) < _MIN_MEANINGFUL_LENGTH:
+        return False
+
+    # If the answer is just a greeting back, skip
+    if answer_lower in _TRIVIAL_PATTERNS:
+        return False
+
+    return True

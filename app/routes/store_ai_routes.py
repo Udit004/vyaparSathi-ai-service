@@ -139,6 +139,20 @@ async def list_chats(store_id: str, request: Request):
     )
 
 
+@router.get("/memory/status", response_model=ApiResponse)
+async def get_memory_status():
+    """
+    Diagnostic endpoint — returns mem0 configuration and health status.
+    """
+    from app.agent.memory import get_memory_status as _get_status
+
+    status = _get_status()
+    return ApiResponse(
+        data=status,
+        message="Memory status retrieved",
+    )
+
+
 @router.get("/{store_id}/chats/{chat_id}", response_model=ApiResponse)
 async def get_chat(store_id: str, chat_id: str, request: Request):
     """
@@ -217,9 +231,15 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     ``thread_id`` so the agent gets a clean context window. Chat history is
     persisted in MongoDB (``agent_chats`` + ``agent_chat_messages``).
 
+    Long-term memory (mem0) persistence runs as a background task AFTER the
+    SSE stream completes, so it never blocks the response.
+
     The frontend sends ``chat_id`` (preferred) or the legacy ``session_id``.
     """
     from app.agent import build_graph, get_async_checkpointer, make_initial_state
+    from app.agent.memory import add_user_memory, add_store_memory
+    from app.agent.nodes.think_node import _is_conversation_meaningful
+    import asyncio
 
     user_id = request.headers.get("x-user-id", "default_user")
 
@@ -236,11 +256,13 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     # Persist the user message
     await add_user_message(chat_id, payload.message)
 
-    # Accumulator for the assistant's streamed text so we can persist it
-    # at the end of the stream.
+    # Accumulator for the assistant's streamed text
     assistant_text_parts: list[str] = []
+    # Track tool usage
+    tools_used_set: set[str] = set()
 
     async def event_generator():
+        nonlocal tools_used_set
         try:
             checkpointer = get_async_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
@@ -258,6 +280,10 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             async for event in graph.astream_events(initial_state, config=config, version="v2"):
                 kind = event["event"]
                 name = event["name"]
+
+                # Track tool usage
+                if kind == "on_tool_end":
+                    tools_used_set.add(name)
 
                 # Stream LLM chunks directly to the UI
                 if kind == "on_chat_model_stream":
@@ -279,7 +305,16 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     data = json.dumps({"text": f"\n_[{msg}]_\n"})
                     yield f"event: token\ndata: {data}\n\n"
 
-            # Persist assistant response to chat history
+                # Notify frontend when memory is being queried
+                elif kind == "on_chain_start" and name == "memory_query":
+                    data = json.dumps({"text": "\n_[Loading long-term memory...]_\n"})
+                    yield f"event: token\ndata: {data}\n\n"
+
+                elif kind == "on_chain_end" and name == "memory_query":
+                    data = json.dumps({"text": "\n_[Memory loaded.]_\n"})
+                    yield f"event: token\ndata: {data}\n\n"
+
+            # After graph completes, persist assistant response to chat history
             full_response = "".join(assistant_text_parts)
             if full_response:
                 await add_assistant_message(
@@ -298,6 +333,27 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             # End of stream
             yield "event: done\ndata: {}\n\n"
 
+            # After SSE stream is fully sent, persist to mem0 in background
+            # so it never blocks the client response.
+            should_persist = _is_conversation_meaningful(
+                user_prompt=payload.message,
+                final_answer=full_response,
+                tools_used=list(tools_used_set),
+                loop_count=0,
+            )
+            if should_persist and full_response:
+                messages = [
+                    {"role": "user", "content": payload.message},
+                    {"role": "assistant", "content": full_response},
+                ]
+                asyncio.create_task(
+                    _persist_memory_background(
+                        user_id=user_id,
+                        store_id=store_id,
+                        messages=messages,
+                    )
+                )
+
         except Exception as e:
             # Send error in stream
             error_data = json.dumps({"message": str(e)})
@@ -313,3 +369,43 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Background memory persistence
+# ---------------------------------------------------------------------------
+
+async def _persist_memory_background(
+    *,
+    user_id: str,
+    store_id: str,
+    messages: list[dict],
+) -> None:
+    """
+    Persist conversation to mem0 long-term memory in the background.
+
+    Runs after the SSE stream has completed and the client has received
+    the response. Failures are logged but never affect the client.
+    """
+    from app.agent.memory import add_user_memory, add_store_memory
+    import structlog
+
+    logger = structlog.get_logger("vyaparsathi.ai.memory.background")
+
+    try:
+        user_ok = await add_user_memory(user_id, messages)
+        store_ok = await add_store_memory(store_id, messages)
+        logger.info(
+            "background_memory_persist_complete",
+            user_id=user_id,
+            store_id=store_id,
+            user_ok=user_ok,
+            store_ok=store_ok,
+        )
+    except Exception as exc:
+        logger.warning(
+            "background_memory_persist_failed",
+            user_id=user_id,
+            store_id=store_id,
+            error=str(exc),
+        )

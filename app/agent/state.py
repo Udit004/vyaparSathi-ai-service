@@ -348,14 +348,20 @@ class VyaparAgentState(TypedDict):
     user_memory_loaded: bool
     """
     Flag: has the mem0 user-preference memory been fetched this session?
-    Set to True by the think node on first loop after loading.
+    Set to True by the memory_query node after loading.
     Prevents redundant mem0 API calls on every loop.
     """
 
     store_memory_loaded: bool
     """
     Flag: has the mem0 store-knowledge memory been fetched this session?
-    Set to True by the think node on first loop after loading.
+    Set to True by the memory_query node after loading.
+    """
+
+    memory_query_needed: bool
+    """
+    Flag set by the think node when it decides it needs to query memory.
+    The memory_query node checks this and runs if True, then clears it.
     """
 
     user_preferences: dict[str, Any]
@@ -412,6 +418,17 @@ class VyaparAgentState(TypedDict):
     None during normal operation.
     """
 
+    should_persist_memory: bool
+    """
+    Flag set by the think node when the conversation contains meaningful
+    content worth storing in long-term mem0 memory.
+
+    Set to False for trivial exchanges ("hi", "hello", "ok") to avoid
+    polluting memory with noise. Set to True when the user asks a real
+    question, provides preferences, or the agent produces a substantive
+    response with actual data/insights.
+    """
+
 
 # ---------------------------------------------------------------------------
 # AgentConfig — runtime configuration (NOT part of the graph state)
@@ -441,10 +458,11 @@ class AgentConfig(TypedDict, total=False):
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MAX_LOOPS: int = 5
+DEFAULT_MAX_LOOPS: int = 3
 """
-Global hard ceiling on agent loops.
-User review confirmed: max 5 loops, not configurable per-request.
+Global hard ceiling on agent loops. Default: 3.
+Kept low to respect LLM rate limits while still allowing
+memory queries + tool calls in a single run.
 """
 
 AVAILABLE_TOOLS: list[str] = [
@@ -526,12 +544,15 @@ def make_initial_state(
         # 6. Memory — not loaded yet
         user_memory_loaded=False,
         store_memory_loaded=False,
+        memory_query_needed=False,
         user_preferences={},
         store_knowledge={},
         # 7. Output — empty until respond node runs
         final_answer="",
         response_metadata={},
         error=None,
+        # 8. Memory persistence flag
+        should_persist_memory=False,
     )
 
 
