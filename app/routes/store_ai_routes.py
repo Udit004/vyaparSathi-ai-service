@@ -39,6 +39,15 @@ from app.models.chat_history import ChatSessionModel, ChatMessageModel
 router = APIRouter(tags=["store_ai"])
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON serializer for objects not handled by the default encoder."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    return str(obj)
+
+
 # ---------------------------------------------------------------------------
 # Shared response model
 # ---------------------------------------------------------------------------
@@ -281,6 +290,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             async for event in graph.astream_events(initial_state, config=config, version="v2"):
                 kind = event["event"]
                 name = event["name"]
+                data = event.get("data", {}) or {}
 
                 # Track tool usage
                 if kind == "on_tool_end":
@@ -295,16 +305,31 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                         data = json.dumps({"text": text})
                         yield f"event: token\ndata: {data}\n\n"
 
-                # Stream tool execution updates
+                # Emit a structured tool_call event so the frontend can
+                # render the LLM's reasoning trace (which tools it called,
+                # with what arguments, and what they returned).
                 elif kind == "on_tool_start":
-                    msg = f"Calling tool: {name}..."
-                    data = json.dumps({"text": f"\n_[{msg}]_\n"})
-                    yield f"event: token\ndata: {data}\n\n"
+                    tool_input = data.get("input", {}) or {}
+                    tool_payload = json.dumps({
+                        "id": f"tool-{name}-{len(tools_used_set)}",
+                        "name": name,
+                        "args": tool_input,
+                        "status": "running",
+                    }, default=_json_default)
+                    yield f"event: tool_call\ndata: {tool_payload}\n\n"
 
                 elif kind == "on_tool_end":
-                    msg = f"Finished tool: {name}."
-                    data = json.dumps({"text": f"\n_[{msg}]_\n"})
-                    yield f"event: token\ndata: {data}\n\n"
+                    tool_output = data.get("output", {})
+                    # LangChain tool outputs are ToolMessage-like objects;
+                    # extract their content for the frontend.
+                    result = getattr(tool_output, "content", tool_output)
+                    tool_payload = json.dumps({
+                        "id": f"tool-{name}-{len(tools_used_set)}",
+                        "name": name,
+                        "result": result,
+                        "status": "completed",
+                    }, default=_json_default)
+                    yield f"event: tool_call\ndata: {tool_payload}\n\n"
 
                 # Notify frontend when memory is being queried
                 elif kind == "on_chain_start" and name == "memory_query":
@@ -335,7 +360,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 "chatId": chat_id,
                 "threadId": thread_id,
                 "title": chat_title,
-            })
+            }, default=_json_default)
             yield f"event: session\ndata: {session_data}\n\n"
 
             # End of stream
@@ -362,9 +387,9 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     )
                 )
 
-        except Exception as e:
+        except (Exception, asyncio.CancelledError) as e:
             # Send error in stream
-            error_data = json.dumps({"message": str(e)})
+            error_data = json.dumps({"message": str(e)}, default=_json_default)
             yield f"event: error\ndata: {error_data}\n\n"
             yield "event: done\ndata: {}\n\n"
 
