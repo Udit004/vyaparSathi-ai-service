@@ -310,5 +310,7 @@ def _flatten_results(results: list[dict]) -> str:
     parts = []
     for r in results:
         text = r.get("memory") or r.get("text") or str(r)
-        parts.append(str(text))
+        # Defensive: coerce to str so str.join never receives a list/dict
+        # (would raise "sequence item 0: expected str instance, list found").
+        parts.append(str(text) if not isinstance(text, str) else text)
     return "\n".join(parts)

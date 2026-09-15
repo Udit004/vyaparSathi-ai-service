@@ -45,7 +45,35 @@ def _json_default(obj: Any) -> Any:
         return obj.model_dump()
     if hasattr(obj, "dict"):
         return obj.dict()
+    if hasattr(obj, "__dict__"):
+        return obj.__dict__
     return str(obj)
+
+
+def _flatten_text(value) -> str:
+    """
+    Recursively coerce a value into a plain string.
+
+    Some LLM providers stream ``chunk.content`` as a list of content
+    blocks (e.g. ``[{"type": "text", "text": "..."}]``). Passing such a
+    nested value directly to ``str.join`` raises::
+
+        TypeError: sequence item 0: expected str instance, list found
+
+    This helper walks nested lists/dicts and flattens them into a single
+    string so every downstream ``.join`` call is safe.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(_flatten_text(v) for v in value)
+    if isinstance(value, dict):
+        if "text" in value:
+            return _flatten_text(value["text"])
+        return json.dumps(value, default=_json_default)
+    if value is None:
+        return ""
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +274,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
 
     The frontend sends ``chat_id`` (preferred) or the legacy ``session_id``.
     """
-    from app.agent import build_graph, get_async_checkpointer, make_initial_state
+    from app.agent import build_graph, get_checkpointer, make_initial_state
     from app.agent.memory import add_user_memory, add_store_memory
     from app.agent.nodes.think_node import _is_conversation_meaningful
     import asyncio
@@ -274,7 +302,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     async def event_generator():
         nonlocal tools_used_set
         try:
-            checkpointer = get_async_checkpointer()
+            checkpointer = get_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
 
             initial_state = make_initial_state(
@@ -300,7 +328,14 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 if kind == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
                     if chunk.content:
-                        text = chunk.content
+                        # Some providers stream content as a list of blocks
+                        # (e.g. [{"type": "text", "text": "..."}]). Flatten
+                        # it to a plain string here so the accumulator and
+                        # the downstream "".join() never receive a list —
+                        # that would raise "sequence item 0: expected str
+                        # instance, list found" AFTER the stream finished,
+                        # causing the response to appear truncated.
+                        text = _flatten_text(chunk.content)
                         assistant_text_parts.append(text)
                         data = json.dumps({"text": text})
                         yield f"event: token\ndata: {data}\n\n"
@@ -341,7 +376,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     yield f"event: token\ndata: {data}\n\n"
 
             # After graph completes, persist assistant response to chat history
-            full_response = "".join(assistant_text_parts)
+            full_response = "".join(_flatten_text(p) for p in assistant_text_parts)
             if full_response:
                 await add_assistant_message(
                     chat_id,

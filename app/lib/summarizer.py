@@ -87,7 +87,7 @@ def _available_provider():
 # ---------------------------------------------------------------------------
 
 async def summarize(
-    text: str,
+    text,
     *,
     instruction: str,
     max_tokens: int = 256,
@@ -97,7 +97,8 @@ async def summarize(
     Summarize ``text`` using a small/fast model.
 
     Args:
-        text: The raw text to compress.
+        text: The raw text to compress. Non-string values (lists, dicts,
+            None) are flattened to a string before use.
         instruction: Task instruction (e.g. "Summarize this inventory report").
         max_tokens: Maximum tokens for the summary.
         provider: Force a specific provider ("groq"|"nvidia"); auto-detect if None.
@@ -106,6 +107,7 @@ async def summarize(
         A compressed summary string. Falls back to truncation if no
         provider is available or the call fails.
     """
+    text = _flatten_text(text)
     if not text or not text.strip():
         return ""
 
@@ -147,7 +149,7 @@ async def summarize(
 
 
 def summarize_sync(
-    text: str,
+    text,
     *,
     instruction: str,
     max_tokens: int = 256,
@@ -159,6 +161,7 @@ def summarize_sync(
     loop, it schedules the coroutine on that loop and blocks until it
     completes (the caller is responsible for not deadlocking).
     """
+    text = _flatten_text(text)
     if not text or not text.strip():
         return ""
     coro = summarize(text, instruction=instruction, max_tokens=max_tokens, provider=provider)
@@ -176,8 +179,35 @@ def summarize_sync(
         return asyncio.run(coro)
 
 
-def _truncate(text: str, *, max_chars: int) -> str:
+def _flatten_text(value) -> str:
+    """
+    Recursively coerce a value into a plain string.
+
+    Some callers pass non-string inputs (lists, dicts, None) — e.g. a
+    tool payload that is a list of dicts. Passing such a value directly to
+    ``str.join`` raises::
+
+        TypeError: sequence item 0: expected str instance, list found
+
+    This helper walks nested lists/dicts and flattens them into a single
+    string so every downstream ``.join`` / ``len`` call is safe.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flatten_text(v) for v in value)
+    if isinstance(value, dict):
+        if "text" in value:
+            return _flatten_text(value["text"])
+        return str(value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _truncate(text, *, max_chars: int) -> str:
     """Deterministic truncation fallback."""
+    text = _flatten_text(text)
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "...[truncated]"

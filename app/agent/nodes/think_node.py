@@ -306,15 +306,42 @@ def _message_text(msg) -> str:
     """Extract a compact text representation of a BaseMessage."""
     content = getattr(msg, "content", "")
     if isinstance(content, list):
-        # Some providers return content as a list of blocks
         parts = []
         for block in content:
             if isinstance(block, dict):
-                parts.append(block.get("text", ""))
+                text = block.get("text", "")
+                parts.append(_flatten_text(text))
             else:
-                parts.append(str(block))
+                parts.append(_flatten_text(block))
         content = " ".join(parts)
-    return str(content)
+    return _flatten_text(content)
+
+
+def _flatten_text(value) -> str:
+    """
+    Recursively coerce a value into a plain string.
+
+    Some LLM providers nest text as a list of strings or dicts (e.g.
+    ``content=[{"type": "text", "text": ["a", "b"]}]``). Passing such a
+    nested value directly to ``str.join`` raises::
+
+        TypeError: sequence item 0: expected str instance, list found
+
+    This helper walks nested lists/dicts and flattens them into a single
+    string, so every ``.join`` call in this module always receives strings.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flatten_text(v) for v in value)
+    if isinstance(value, dict):
+        # Prefer a "text" key if present, else stringify the whole dict.
+        if "text" in value:
+            return _flatten_text(value["text"])
+        return str(value)
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _is_window_start_invalid(msg) -> bool:
@@ -450,6 +477,11 @@ async def _sliding_window(messages, *, keep_last: int = 3):
         if name and role == "tool" and name not in tool_calls_made:
             tool_calls_made.append(name)
 
+    # Defensive: ensure every part is a plain string before joining.
+    # Some message content can be a list/dict (e.g. Gemini multi-part
+    # content), which would raise "sequence item 0: expected str instance,
+    # list found" inside str.join.
+    raw_summary_parts = [_flatten_text(p) for p in raw_summary_parts]
     raw_summary = "\n".join(raw_summary_parts)
 
     # If the older segment is large, compress it with the small summarizer

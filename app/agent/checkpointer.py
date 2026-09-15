@@ -6,17 +6,33 @@ MongoDB-backed LangGraph checkpointer for short-term cross-session memory.
 
 Uses:
 
-    langgraph-checkpoint-mongodb
+    langgraph-checkpoint-mongodb>=0.2.0
 
-Current API:
+Why v0.2.0?
+    langgraph 0.2.x requires checkpoints to carry a ``pending_sends`` key.
+    The 0.1.x MongoDB saver did not write that key, causing::
 
+        KeyError: 'pending_sends'
+
+    v0.2.0 of the MongoDB saver writes ``pending_sends`` and is compatible
+    with ``langgraph-checkpoint >=2.0.23``.
+
+API used here
+-------------
+``MongoDBSaver(client, db_name, ...)`` — the direct constructor accepts a
+``pymongo.MongoClient`` and returns a saver instance that is NOT a context
+manager. This lets us hold a single application-wide singleton across many
+graph runs (both sync ``invoke`` and async ``astream_events``).
+
+    from pymongo import MongoClient
     from langgraph.checkpoint.mongodb import MongoDBSaver
-    from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 
-The checkpointer is initialized once during FastAPI application startup
-and shared across all agent runs.
-
-The MongoDB client and checkpointer are application-level singletons.
+    saver = MongoDBSaver(
+        client=MongoClient(mongo_url),
+        db_name=db_name,
+        checkpoint_collection_name="agent_checkpoints",
+        writes_collection_name="agent_checkpoint_writes",
+    )
 
 The checkpointer is injected into the compiled LangGraph via:
 
@@ -27,11 +43,9 @@ from __future__ import annotations
 
 import structlog
 
-from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 
 from app.config.settings import get_settings
 
@@ -48,10 +62,6 @@ LOGGER = structlog.get_logger(
 _mongo_client: MongoClient | None = None
 
 _checkpointer: MongoDBSaver | None = None
-
-_async_mongo_client: AsyncIOMotorClient | None = None
-
-_async_checkpointer: AsyncMongoDBSaver | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,12 +107,12 @@ def get_checkpointer() -> MongoDBSaver:
     # Create MongoDB client
     # -----------------------------------------------------------------------
 
-    _mongo_client = MongoClient(
-        settings.mongo_url
-    )
+    _mongo_client = MongoClient(settings.mongo_url)
 
     # -----------------------------------------------------------------------
-    # Create LangGraph MongoDB checkpointer
+    # Create LangGraph MongoDB checkpointer (v0.2.0).
+    # Using the direct constructor (NOT from_conn_string, which is a
+    # context manager that would close the client on exit).
     # -----------------------------------------------------------------------
 
     _checkpointer = MongoDBSaver(
@@ -110,7 +120,6 @@ def get_checkpointer() -> MongoDBSaver:
         db_name=settings.mongo_db_name,
         checkpoint_collection_name="agent_checkpoints",
         writes_collection_name="agent_checkpoint_writes",
-        ttl=settings.langgraph_checkpointer_ttl_seconds,
     )
 
     LOGGER.info(
@@ -121,45 +130,6 @@ def get_checkpointer() -> MongoDBSaver:
     )
 
     return _checkpointer
-
-
-def get_async_checkpointer() -> AsyncMongoDBSaver:
-    """
-    Return the application-wide async MongoDB LangGraph checkpointer.
-
-    Async LangGraph execution methods such as ``astream_events`` require
-    async checkpoint methods like ``aget_tuple``. The synchronous
-    ``MongoDBSaver`` does not implement those methods.
-    """
-
-    global _async_mongo_client
-    global _async_checkpointer
-
-    if _async_checkpointer is not None:
-        return _async_checkpointer
-
-    settings = get_settings()
-
-    _async_mongo_client = AsyncIOMotorClient(
-        settings.mongo_url
-    )
-
-    _async_checkpointer = AsyncMongoDBSaver(
-        client=_async_mongo_client,
-        db_name=settings.mongo_db_name,
-        checkpoint_collection_name="agent_checkpoints",
-        writes_collection_name="agent_checkpoint_writes",
-        ttl=settings.langgraph_checkpointer_ttl_seconds,
-    )
-
-    LOGGER.info(
-        "async_checkpointer_initialized",
-        db=settings.mongo_db_name,
-        checkpoint_collection="agent_checkpoints",
-        writes_collection="agent_checkpoint_writes",
-    )
-
-    return _async_checkpointer
 
 
 # ---------------------------------------------------------------------------
@@ -177,26 +147,17 @@ def close_checkpointer() -> None:
 
     global _mongo_client
     global _checkpointer
-    global _async_mongo_client
-    global _async_checkpointer
 
     if _mongo_client is not None:
-
-        _mongo_client.close()
-
-        LOGGER.info(
-            "checkpointer_closed"
-        )
-
-    if _async_mongo_client is not None:
-
-        _async_mongo_client.close()
-
-        LOGGER.info(
-            "async_checkpointer_closed"
-        )
+        try:
+            _mongo_client.close()
+        except Exception as exc:  # pragma: no cover - best-effort close
+            LOGGER.warning(
+                "checkpointer_close_failed",
+                error=str(exc),
+            )
 
     _mongo_client = None
     _checkpointer = None
-    _async_mongo_client = None
-    _async_checkpointer = None
+
+    LOGGER.info("checkpointer_closed")

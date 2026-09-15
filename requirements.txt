@@ -14,7 +14,7 @@ langchain-google-genai
 langchain-openai
 langchain-core
 langgraph
-langgraph-checkpoint-mongodb==0.1.3
+langgraph-checkpoint-mongodb==0.2.0
 
 # Long-term memory
 mem0ai
