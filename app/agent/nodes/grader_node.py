@@ -12,7 +12,8 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.lib.grader import classify_prompt
+from app.agent.utils import latest_human_prompt, message_text
+from app.lib.grader import classify_prompt, is_retail_follow_up
 from app.agent.prompts.classifier_prompts import CLASSIFIER_HARM_INSTRUCTION
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -34,13 +35,17 @@ _REFUSAL_OFF_TOPIC = (
 
 def _current_user_prompt(state: VyaparAgentState) -> str:
     """Return the latest user turn, even if a checkpoint has stale scalar state."""
-    messages = state.get("messages", []) or []
-    for message in reversed(messages):
-        if isinstance(message, HumanMessage):
-            content = message.content
-            if isinstance(content, str):
-                return content
-    return state.get("user_prompt", "") or ""
+    return latest_human_prompt(state.get("messages", []), state.get("user_prompt", ""))
+
+
+def _recent_context(state: VyaparAgentState, current_prompt: str) -> str:
+    """Build bounded context from earlier turns without replacing the current prompt."""
+    parts: list[str] = []
+    for message in (state.get("messages", []) or [])[:-1]:
+        content = message_text(getattr(message, "content", ""))
+        if content:
+            parts.append(content)
+    return "\n".join(parts)[-4_000:]
 
 
 async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
@@ -55,6 +60,18 @@ async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
             "user_prompt": user_prompt,
             "grader_denied": False,
             "grader_reason": "",
+        }
+
+    if is_retail_follow_up(user_prompt, _recent_context(state, user_prompt)):
+        LOGGER.info(
+            "grader_contextual_retail_follow_up",
+            store_id=store_id,
+            user_prompt_len=len(user_prompt),
+        )
+        return {
+            "user_prompt": user_prompt,
+            "grader_denied": False,
+            "grader_reason": "contextual retail operations follow-up",
         }
 
     verdict, reason = await classify_prompt(user_prompt, instruction=CLASSIFIER_HARM_INSTRUCTION)

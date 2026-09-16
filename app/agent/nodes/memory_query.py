@@ -24,7 +24,8 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.agent.memory import load_memory_context
+from app.agent.memory import load_memory_context, should_retrieve_memory
+from app.agent.utils import latest_human_prompt
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.memory_query")
 
@@ -59,13 +60,34 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
         user_id=user_id,
     )
 
-    user_prompt = state.get("user_prompt", "")
+    user_prompt = latest_human_prompt(
+        state.get("messages", []),
+        state.get("user_prompt", ""),
+    )
+
+    intent = state.get("intent", "general")
+    needs_memory_intent = intent in {"memory", "mixed"}
+    if not needs_memory_intent and not should_retrieve_memory(user_prompt):
+        LOGGER.info(
+            "memory_query_not_needed",
+            store_id=store_id,
+            intent=intent,
+            reason="request is answered by live tools or recent conversation",
+        )
+        return {
+            "user_memory_loaded": True,
+            "store_memory_loaded": True,
+            "memory_query_needed": False,
+            "user_preferences": {"raw": [], "summary": ""},
+            "store_knowledge": {"raw": [], "summary": ""},
+        }
 
     try:
         user_prefs, store_knowledge = await load_memory_context(
             user_id=user_id,
             store_id=store_id,
             user_prompt=user_prompt,
+            current_goal=state.get("goal") or f"Answer the user's question: {user_prompt}",
         )
     except Exception as exc:
         LOGGER.error(

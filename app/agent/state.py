@@ -57,6 +57,7 @@ from langgraph.graph.message import add_messages
 # ---------------------------------------------------------------------------
 
 GoalStatus = Literal["pending", "in_progress", "complete", "failed"]
+Intent = Literal["live_data", "memory", "conversation_recap", "mixed", "general"]
 
 # ---------------------------------------------------------------------------
 # ToolCall — describes a single tool invocation the LLM wants to make
@@ -364,6 +365,12 @@ class VyaparAgentState(TypedDict):
     The memory_query node checks this and runs if True, then clears it.
     """
 
+    intent: Intent
+    """Request intent selected before the think node chooses tools."""
+
+    intent_reason: str
+    """Short internal reason for the selected request intent."""
+
     user_preferences: dict[str, Any]
     """
     User's persistent preferences fetched from mem0 (user memory store,
@@ -567,6 +574,8 @@ def make_initial_state(
         user_memory_loaded=False,
         store_memory_loaded=False,
         memory_query_needed=False,
+        intent="general",
+        intent_reason="",
         user_preferences={},
         store_knowledge={},
         # 7. Output — empty until respond node runs

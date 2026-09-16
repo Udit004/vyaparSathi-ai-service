@@ -143,6 +143,19 @@ _CONVERSATION_SCOPE_PHRASES = (
     "summarise our chat",
 )
 
+_PREFERENCE_SCOPE_PHRASES = (
+    "my preference",
+    "my preferences",
+    "what do you know about me",
+    "what do you remember about me",
+    "what have you remembered about me",
+    "my preferred language",
+    "my preferred style",
+    "how i prefer",
+    "tell me about myself",
+    "about myself",
+)
+
 _STORE_OVERVIEW_PHRASES = (
     "tell me about my store",
     "tell me about the store",
@@ -181,8 +194,34 @@ def _obvious_retail_query(prompt: str) -> bool:
     return (
         any(phrase in lowered for phrase in _RETAIL_SCOPE_PHRASES)
         or any(phrase in lowered for phrase in _CONVERSATION_SCOPE_PHRASES)
+        or any(phrase in lowered for phrase in _PREFERENCE_SCOPE_PHRASES)
         or any(phrase in lowered for phrase in _STORE_OVERVIEW_PHRASES)
         or ("store" in lowered and "summary" in lowered)
+    )
+
+
+def is_retail_follow_up(prompt: str, recent_context: str) -> bool:
+    """Recognize an ambiguous action request that follows retail context."""
+    lowered_prompt = (prompt or "").lower()
+    lowered_context = (recent_context or "").lower()
+    if (
+        not lowered_prompt
+        or any(keyword in lowered_prompt for keyword in _SEVERE_HARM_KEYWORDS)
+        or any(phrase in lowered_prompt for phrase in _PROMPT_INJECTION_PHRASES)
+    ):
+        return False
+
+    action_terms = (
+        "step", "steps", "action", "actions", "recommend", "recommendation",
+        "immediately", "urgent", "what should i", "how should i", "give me",
+    )
+    retail_context_terms = (
+        "inventory", "sales summary", "dead stock", "low stock", "stockout",
+        "forecast", "restock", "revenue", "top-selling", "store insight",
+    )
+    return (
+        any(term in lowered_prompt for term in action_terms)
+        and any(term in lowered_context for term in retail_context_terms)
     )
 
 

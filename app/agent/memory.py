@@ -20,13 +20,18 @@ NOTE: The mem0 SDK is synchronous. We wrap all calls in
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Optional
 
 import structlog
 
 from app.config.settings import get_settings
 from app.lib.summarizer import summarize
-from app.agent.prompts.summarizer_prompts import SUMMARIZER_MEMORY_INSTRUCTION
+from app.agent.prompts.summarizer_prompts import (
+    MEMORY_EXTRACTION_INSTRUCTION,
+    MEMORY_QUERY_INSTRUCTION,
+    SUMMARIZER_MEMORY_INSTRUCTION,
+)
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory")
 
@@ -37,6 +42,22 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.memory")
 
 _client: Optional[Any] = None  # mem0.MemoryClient
 _enabled: bool = False
+_project_instructions_configured: bool = False
+
+_MEM0_CUSTOM_INSTRUCTIONS = (
+    "This project is Vyapar Copilot for one Indian retail store. Store only "
+    "durable information useful across future conversations.\n\n"
+    "Extract:\n"
+    "- Explicit user communication preferences such as language, tone, and detail.\n"
+    "- Store-specific facts, recurring inventory or sales patterns, and explicit "
+    "restocking or business decisions.\n\n"
+    "Exclude:\n"
+    "- Greetings, small talk, one-off questions, temporary tool outputs, and "
+    "assistant refusal text.\n"
+    "- Passwords, API keys, tokens, personal identifiers, and sensitive financial "
+    "details.\n"
+    "- Guesses or facts that are not explicitly supported by the conversation."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +86,7 @@ def get_memory_client():
 
         _client = MemoryClient(api_key=settings.mem0_api_key)
         _enabled = True
+        _configure_project_instructions(_client)
         LOGGER.info(
             "mem0_initialized",
             api_key_prefix=settings.mem0_api_key[:8],
@@ -76,6 +98,25 @@ def get_memory_client():
         _enabled = False
 
     return _client
+
+
+def _configure_project_instructions(client: Any) -> None:
+    """Configure Mem0 extraction rules once, without making startup fatal."""
+    global _project_instructions_configured
+    if _project_instructions_configured:
+        return
+
+    try:
+        project = getattr(client, "project", None)
+        update = getattr(project, "update", None)
+        if callable(update):
+            update(custom_instructions=_MEM0_CUSTOM_INSTRUCTIONS)
+            _project_instructions_configured = True
+            LOGGER.info("mem0_custom_instructions_configured")
+        else:
+            LOGGER.warning("mem0_custom_instructions_unsupported")
+    except Exception as exc:
+        LOGGER.warning("mem0_custom_instructions_failed", error=str(exc))
 
 
 def is_enabled() -> bool:
@@ -99,7 +140,12 @@ def get_memory_status() -> dict:
 # User memory (namespace = user_id)
 # ---------------------------------------------------------------------------
 
-async def add_user_memory(user_id: str, messages: list[dict]) -> bool:
+async def add_user_memory(
+    user_id: str,
+    messages: list[dict],
+    *,
+    curated_messages: list[dict] | None = None,
+) -> bool:
     """
     Store conversation messages into the user's long-term memory.
 
@@ -116,10 +162,15 @@ async def add_user_memory(user_id: str, messages: list[dict]) -> bool:
             LOGGER.debug("add_user_memory_skip", reason="mem0 not configured")
         return False
 
+    curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
+    if not curated:
+        LOGGER.debug("add_user_memory_skip", reason="no durable memory extracted")
+        return False
+
     try:
         # mem0 SDK is synchronous — run in thread to avoid blocking event loop
-        result = await asyncio.to_thread(client.add, messages, user_id=user_id)
-        LOGGER.info("user_memory_added", user_id=user_id, count=len(messages), result=str(result)[:200])
+        result = await asyncio.to_thread(client.add, curated, user_id=user_id)
+        LOGGER.info("user_memory_added", user_id=user_id, count=len(curated), result=str(result)[:200])
         return True
     except Exception as exc:
         LOGGER.error("user_memory_add_failed", user_id=user_id, error=str(exc), exc_info=True)
@@ -155,7 +206,12 @@ async def search_user_memory(user_id: str, query: str) -> list[dict]:
 # Store memory (namespace = store_id, isolated per store)
 # ---------------------------------------------------------------------------
 
-async def add_store_memory(store_id: str, messages: list[dict]) -> bool:
+async def add_store_memory(
+    store_id: str,
+    messages: list[dict],
+    *,
+    curated_messages: list[dict] | None = None,
+) -> bool:
     """
     Store conversation messages into the store's long-term memory.
 
@@ -172,9 +228,14 @@ async def add_store_memory(store_id: str, messages: list[dict]) -> bool:
     if not client or not messages:
         return False
 
+    curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
+    if not curated:
+        LOGGER.debug("add_store_memory_skip", reason="no durable memory extracted")
+        return False
+
     try:
-        result = await asyncio.to_thread(client.add, messages, user_id=store_id)
-        LOGGER.info("store_memory_added", store_id=store_id, count=len(messages), result=str(result)[:200])
+        result = await asyncio.to_thread(client.add, curated, user_id=store_id)
+        LOGGER.info("store_memory_added", store_id=store_id, count=len(curated), result=str(result)[:200])
         return True
     except Exception as exc:
         LOGGER.error("store_memory_add_failed", store_id=store_id, error=str(exc), exc_info=True)
@@ -215,6 +276,7 @@ async def load_memory_context(
     user_id: str,
     store_id: str,
     user_prompt: str,
+    current_goal: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     Load both user-preference and store-knowledge memory for the agent.
@@ -224,24 +286,92 @@ async def load_memory_context(
         Each dict has a "raw" key with the list of mem0 results and
         a "summary" key with a flattened text summary for the LLM.
     """
-    user_results = await search_user_memory(user_id, user_prompt)
-    store_results = await search_store_memory(store_id, user_prompt)
+    memory_query = await build_memory_query(user_prompt, current_goal=current_goal)
+    user_results = await search_user_memory(user_id, memory_query)
+    store_results = await search_store_memory(store_id, memory_query)
 
     # Cap raw results to keep the persisted state bounded — the summary
     # is what the LLM actually reads.
-    user_results = _cap_results(user_results)
-    store_results = _cap_results(store_results)
+    user_results = _cap_results(_filter_relevant_results(user_results))
+    store_results = _cap_results(_filter_relevant_results(store_results))
 
     user_prefs = {
         "raw": user_results,
-        "summary": await summarize_memory_results(user_results, user_prompt),
+        "summary": await summarize_memory_results(user_results, memory_query),
     }
     store_knowledge = {
         "raw": store_results,
-        "summary": await summarize_memory_results(store_results, user_prompt),
+        "summary": await summarize_memory_results(store_results, memory_query),
     }
 
     return user_prefs, store_knowledge
+
+
+def should_retrieve_memory(user_prompt: str) -> bool:
+    """Return whether the request needs durable memory rather than live tools."""
+    prompt = (user_prompt or "").lower()
+    memory_signals = (
+        "remember", "last time", "previous", "earlier", "we decided",
+        "our decision", "usually", "prefer", "preference", "my language",
+        "my style", "what did we discuss",
+    )
+    return any(signal in prompt for signal in memory_signals)
+
+
+async def build_memory_query(user_prompt: str, *, current_goal: str = "") -> str:
+    """Distill the current request into a focused Mem0 semantic-search query."""
+    prompt = (user_prompt or "").strip()
+    if not prompt:
+        return "retail store inventory sales forecasting restocking preferences"
+
+    query_input = f"Current request: {prompt}"
+    if current_goal:
+        query_input += f"\nCurrent goal: {current_goal}"
+
+    query = await summarize(
+        query_input,
+        instruction=MEMORY_QUERY_INSTRUCTION,
+        max_tokens=48,
+    )
+    query = " ".join((query or "").split())
+    if not query or query.upper() == "NONE":
+        return prompt[:300]
+    return query[:300]
+
+
+async def curate_memory_messages(messages: list[dict]) -> list[dict]:
+    """Convert a completed exchange into one durable memory record or skip it."""
+    if not os.environ.get("GROQ_API_KEY") and not os.environ.get("NVIDIA_API_KEY"):
+        LOGGER.debug("memory_curation_skip", reason="small model unavailable")
+        return []
+
+    text = _flatten_results(messages)
+    if not text.strip():
+        return []
+
+    extracted = await summarize(
+        text,
+        instruction=MEMORY_EXTRACTION_INSTRUCTION,
+        max_tokens=160,
+    )
+    extracted = (extracted or "").strip()
+    if not extracted or extracted.upper() == "NONE":
+        return []
+    return [{"role": "user", "content": extracted}]
+
+
+def _filter_relevant_results(results: list[dict]) -> list[dict]:
+    """Drop low-confidence scored results while preserving SDK results without scores."""
+    if not results:
+        return []
+
+    filtered = []
+    for result in results:
+        score = result.get("score") if isinstance(result, dict) else None
+        if isinstance(score, (int, float)) and score < 0.55:
+            continue
+        filtered.append(result)
+    return filtered
 
 
 # ---------------------------------------------------------------------------

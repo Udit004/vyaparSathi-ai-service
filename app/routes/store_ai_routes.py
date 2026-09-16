@@ -278,7 +278,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     The frontend sends ``chat_id`` (preferred) or the legacy ``session_id``.
     """
     from app.agent import build_graph, get_checkpointer, make_initial_state
-    from app.agent.memory import add_user_memory, add_store_memory
+    from app.agent.memory import add_user_memory, add_store_memory, curate_memory_messages
     from app.agent.nodes.think_node import _is_conversation_meaningful
     import asyncio
 
@@ -391,7 +391,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     values = final_state.values or {}
                     grader_denied = bool(values.get("grader_denied"))
                     state_answer = values.get("final_answer") or ""
-                    if state_answer:
+                    if grader_denied and state_answer:
                         yield f"event: token\ndata: {json.dumps({'text': state_answer})}\n\n"
                         full_response = state_answer
                         LOGGER.info(
@@ -498,8 +498,9 @@ async def _persist_memory_background(
     logger = structlog.get_logger("vyaparsathi.ai.memory.background")
 
     try:
-        user_ok = await add_user_memory(user_id, messages)
-        store_ok = await add_store_memory(store_id, messages)
+        curated = await curate_memory_messages(messages)
+        user_ok = await add_user_memory(user_id, messages, curated_messages=curated)
+        store_ok = await add_store_memory(store_id, messages, curated_messages=curated)
         logger.info(
             "background_memory_persist_complete",
             user_id=user_id,

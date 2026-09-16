@@ -23,9 +23,28 @@ from app.agent.prompts.system_prompts import (
     build_available_tools,
 )
 from app.agent.prompts.summarizer_prompts import SUMMARIZER_HISTORY_INSTRUCTION
+from app.agent.utils import latest_human_prompt
 from langchain_core.messages import SystemMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.think")
+
+_STALE_GUARD_REFUSAL_MARKERS = (
+    "that's outside what vyapar copilot handles",
+    "i'm sorry, but i can't help with that request",
+)
+
+
+def _is_stale_guard_refusal(message) -> bool:
+    """Exclude refusals from prior turns when building the current LLM prompt."""
+    if getattr(message, "type", None) != "ai":
+        return False
+    content = getattr(message, "content", "")
+    if isinstance(content, list):
+        content = " ".join(
+            item.get("text", "") if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    return any(marker in str(content).lower() for marker in _STALE_GUARD_REFUSAL_MARKERS)
 
 
 async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
@@ -48,10 +67,9 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     user_memory_loaded = state.get("user_memory_loaded", False)
     store_memory_loaded = state.get("store_memory_loaded", False)
 
-    # If memory hasn't been loaded yet and we're not on the final loop,
-    # skip LLM invocation entirely — route directly to memory_query node.
-    # The LLM should only reason AFTER it has access to long-term memory.
-    if not user_memory_loaded and not store_memory_loaded:
+    # The intent node decides whether Mem0 is needed. Do not force a memory
+    # lookup for live-data or recent-conversation requests.
+    if state.get("memory_query_needed", False):
         max_loops = state.get("max_loops", 3)
         is_final_loop = loop >= max_loops
         if not is_final_loop:
@@ -135,7 +153,11 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     if available and not is_final_loop:
         sys_content += build_available_tools(available)
 
-    raw_messages = state.get("messages", [])
+    raw_messages = [
+        message
+        for message in state.get("messages", [])
+        if not _is_stale_guard_refusal(message)
+    ]
     # Sliding window: keep the last 3 messages verbatim, compress everything
     # older than that into a compact summary that gets appended to the
     # system prompt. This prevents the LLM context window from growing

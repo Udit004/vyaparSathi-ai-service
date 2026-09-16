@@ -59,6 +59,7 @@ from app.agent.nodes.tool_node import tool_node
 from app.agent.nodes.observe_node import observe_node
 from app.agent.nodes.memory_query import memory_query_node
 from app.agent.nodes.grader_node import grader_node
+from app.agent.nodes.intent_node import intent_node
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ def _route_after_grader(state: VyaparAgentState) -> str:
     """
     if state.get("grader_denied", False):
         return END
-    return "think"
+    return "intent"
 
 
 def _route_after_think(state: VyaparAgentState) -> str:
@@ -129,6 +130,7 @@ def build_graph(checkpointer=None):
     # --------------------------------------------------------------
 
     workflow.add_node("grader", grader_node)
+    workflow.add_node("intent", intent_node)
     workflow.add_node("think", think_node)
     workflow.add_node("memory_query", memory_query_node)
     workflow.add_node("tool", tool_node)
@@ -151,9 +153,11 @@ def build_graph(checkpointer=None):
         _route_after_grader,
         {
             "__end__": END,
-            "think": "think",
+            "intent": "intent",
         },
     )
+
+    workflow.add_edge("intent", "think")
 
     # --------------------------------------------------------------
     # Conditional edges from think
