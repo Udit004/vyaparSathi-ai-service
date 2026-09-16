@@ -9,10 +9,12 @@ fallback chain that transparently tries the next provider when the
 current one is exhausted.
 
 Fallback order:
-    1. gemini-2.5-flash       (primary, reasoning)
-    2. gemini-2.5-flash-lite  (same provider, cheaper/faster)
-    3. NVIDIA llama-3.1-8b    (OpenAI-compatible)
-    4. GROQ llama-3.1-8b      (OpenAI-compatible)
+    1. gemini-2.5-flash        (primary reasoning — full Gemini quota used here)
+    2. gemini-2.5-flash-lite   (same provider, cheaper/faster)
+    3. nvidia/llama-3.1-8b-instruct (OpenAI-compatible)
+    4. gpt-oss-20b             (OpenAI-compatible, GROQ)
+    5. openai/gpt-oss-120b     (OpenAI-compatible, GROQ)
+    6. openai/gpt-oss-safeguard-20b (OpenAI-compatible, GROQ, dedicated safeguard)
 
 The returned object behaves like a single chat model: ``ainvoke`` and
 ``bind_tools`` both work, and tool calls are propagated to every member
@@ -22,7 +24,7 @@ of the chain.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any
 
 import structlog
@@ -45,12 +47,21 @@ def _build_gemini(model: str) -> Any:
     )
 
 
-def _build_openai(model: str) -> Any:
-    """Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint."""
+def _build_openai(model: str, *, base_url: str) -> Any:
+    """
+    Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint.
+
+    ``base_url`` is required for non-OpenAI providers (GROQ, NVIDIA) because
+    without it ChatOpenAI defaults to ``https://api.openai.com/v1`` and the
+    provider-specific model names (e.g. ``nvidia/llama-3.1-8b-instruct``)
+    cannot be resolved. Each fallback entry in ``_PROVIDERS`` binds the
+    correct ``base_url`` via ``functools.partial``.
+    """
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
         model=model,
+        base_url=base_url,
         temperature=0.3,
         max_retries=0,
     )
@@ -72,13 +83,24 @@ def _provider_env(provider_name: str, env_var: str) -> str | None:
 # Provider definitions
 # ---------------------------------------------------------------------------
 
+# OpenAI-compatible base URLs per provider. Bound into ``_build_openai`` via
+# ``functools.partial`` so each fallback entry targets the right endpoint.
+_OPENAI_BASE_URL = {
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
 # Each entry: (provider_name, model_id, build_fn, api_key_env)
-# The order here IS the fallback order.
+# The order here IS the fallback order. Lightweight OpenAI-compatible members
+# (NVIDIA + GROQ) keep Gemini quota reserved for the main think node; the
+# guarder node uses the dedicated openai/gpt-oss-safeguard-20b model.
 _PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI_API_KEY"),
     ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI_API_KEY"),
-    ("nvidia", "nvidia/llama-3.1-8b-instruct", _build_openai, "NVIDIA_API_KEY"),
-    ("groq", "llama-3.1-8b-instant", _build_openai, "GROQ_API_KEY"),
+    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA_API_KEY"),
+    ("groq", "gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
+    ("groq120b", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
+    ("groqGuard", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
 ]
 
 

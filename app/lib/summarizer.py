@@ -5,14 +5,17 @@ Small/fast LLM summarizer for compressing large payloads before they
 enter the agent's context window.
 
 Uses GROQ (primary) or NVIDIA (fallback) — both expose an
-OpenAI-compatible chat completions endpoint. These providers offer
-small, cheap models (e.g. llama-3.1-8b-instant on Groq, nvidia/llama-3.1-8b-instruct
-on NVIDIA) that are ideal for summarization: fast, low-cost, and
-accurate enough for compression tasks.
+OpenAI-compatible chat completions endpoint. These providers offer small,
+cheap models — ``openai/gpt-oss-20b`` on GROQ (which replaced the old
+``llama-3.1-8b-instant`` that was removed from the free developer tier) and
+``nvidia/llama-3.1-8b-instruct`` on NVIDIA — that are ideal for summarisation:
+fast, low-cost, and accurate enough for compression tasks.
 
-The summarizer is best-effort: if no provider key is configured or a
-call fails, it falls back to a deterministic truncation so the agent
-never breaks.
+This mirrors the provider/model choices and the robust dict-based lookup used
+by ``app/lib/grader.py``.
+
+The summarizer is best-effort: if no provider key is configured or a call
+fails, it falls back to a deterministic truncation so the agent never breaks.
 
 Used by:
     - app/agent/memory.py   → compress mem0 search results
@@ -25,22 +28,24 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
+from typing import Any, Tuple
 
 import structlog
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.summarizer")
 
+
 # ---------------------------------------------------------------------------
-# Provider configuration
+# Provider configuration (GROQ primary -> NVIDIA fallback, both OpenAI-compat)
 # ---------------------------------------------------------------------------
 
-# Order matters: GROQ is primary, NVIDIA is fallback.
-_PROVIDERS = (
-    ("groq", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant"),
-    ("nvidia", "https://integrate.api.nvidia.com/v1", "llama-3.1-8b-instruct"),
-)
-
+# Ordered mapping: first entry with a configured API key wins.
+# Each value is (base_url, model). Kept identical to app/lib/grader.py so the
+# lightweight stack uses one consistent set of fast models.
+_PROVIDER_CONFIG = {
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-20b"),
+    "nvidia": ("https://integrate.api.nvidia.com/v1", "nvidia/llama-3.1-8b-instruct"),
+}
 # Per-provider env var name for the API key
 _PROVIDER_KEY_ENV = {
     "groq": "GROQ_API_KEY",
@@ -50,6 +55,10 @@ _PROVIDER_KEY_ENV = {
 # Cache of instantiated OpenAI async clients keyed by provider name.
 _clients: dict[str, Any] = {}
 
+
+# ---------------------------------------------------------------------------
+# Client helpers
+# ---------------------------------------------------------------------------
 
 def _get_client(provider: str):
     """Return (or create) an async OpenAI client for the given provider."""
@@ -67,19 +76,38 @@ def _get_client(provider: str):
         LOGGER.error("summarizer_openai_import_failed", provider=provider, error=str(exc))
         return None
 
-    _, base_url, _ = _PROVIDERS[provider]
+    base_url, _ = _PROVIDER_CONFIG[provider]
     client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=10.0, max_retries=1)
     _clients[provider] = client
     LOGGER.info("summarizer_client_initialized", provider=provider, env=env_name)
     return client
 
 
-def _available_provider():
+def _available_provider() -> str | None:
     """Return the first provider name with a configured API key, or None."""
-    for provider, _, _ in _PROVIDERS:
+    for provider in _PROVIDER_CONFIG:
         if os.environ.get(_PROVIDER_KEY_ENV[provider]):
             return provider
     return None
+
+
+def _create_kwargs(provider: str, model: str, *, max_tokens: int) -> dict[str, Any]:
+    """
+    Build the kwargs for ``client.chat.completions.create``.
+
+    ``openai/gpt-oss-20b`` is a reasoning model on GROQ. Passing
+    ``reasoning_effort="low"`` keeps it fast for this compression task and
+    avoids burning the budget on hidden reasoning tokens — the same choice
+    made by the grader client in ``app/lib/grader.py``.
+    """
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+    }
+    if provider == "groq":
+        kwargs["reasoning_effort"] = "low"
+    return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -118,16 +146,14 @@ async def summarize(
         LOGGER.debug("summarizer_fallback_truncation", reason="no provider key", chars=len(text))
         return _truncate(text, max_chars=max_tokens * 4)
 
-    _, _, model = _PROVIDERS[provider]
+    _, model = _PROVIDER_CONFIG[provider]
     try:
         completion = await client.chat.completions.create(
-            model=model,
+            **_create_kwargs(provider, model, max_tokens=max_tokens),
             messages=[
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": text},
             ],
-            temperature=0.1,
-            max_tokens=max_tokens,
         )
         summary = completion.choices[0].message.content or ""
         LOGGER.info(

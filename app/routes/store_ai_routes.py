@@ -15,6 +15,7 @@ Endpoints:
 
 import json
 import uuid
+import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -37,6 +38,8 @@ from app.services.chat_history_service import (
 from app.models.chat_history import ChatSessionModel, ChatMessageModel
 
 router = APIRouter(tags=["store_ai"])
+
+LOGGER = structlog.get_logger("vyaparsathi.ai.copilot_stream")
 
 
 def _json_default(obj: Any) -> Any:
@@ -375,13 +378,42 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     data = json.dumps({"text": "\n_[Memory loaded.]_\n"})
                     yield f"event: token\ndata: {data}\n\n"
 
-            # After graph completes, persist assistant response to chat history
+            # After graph completes, assemble the full assistant response.
             full_response = "".join(_flatten_text(p) for p in assistant_text_parts)
+            grader_denied = False
+
+            # When the grader denies the request no LLM tokens are streamed,
+            # so fall back to the refusal stored in graph state and emit it
+            # to the client as token events so the refusal is visible.
+            if not full_response:
+                try:
+                    final_state = await graph.aget_state(config)
+                    values = final_state.values or {}
+                    grader_denied = bool(values.get("grader_denied"))
+                    state_answer = values.get("final_answer") or ""
+                    if state_answer:
+                        yield f"event: token\ndata: {json.dumps({'text': state_answer})}\n\n"
+                        full_response = state_answer
+                        LOGGER.info(
+                            "copilot_stream_grader_refusal_emitted",
+                            store_id=store_id,
+                            chat_id=chat_id,
+                            grader_reason=values.get("grader_reason", ""),
+                        )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "copilot_stream_final_state_read_failed",
+                        store_id=store_id,
+                        chat_id=chat_id,
+                        error=str(exc),
+                    )
+
+            # Persist the assistant response to chat history
             if full_response:
                 await add_assistant_message(
                     chat_id,
                     full_response,
-                    metadata={"thread_id": thread_id},
+                    metadata={"thread_id": thread_id, "grader_denied": grader_denied},
                 )
 
             # Generate a title for new chats (first exchange) so the
@@ -402,12 +434,17 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             yield "event: done\ndata: {}\n\n"
 
             # After SSE stream is fully sent, persist to mem0 in background
-            # so it never blocks the client response.
-            should_persist = _is_conversation_meaningful(
-                user_prompt=payload.message,
-                final_answer=full_response,
-                tools_used=list(tools_used_set),
-                loop_count=0,
+            # so it never blocks the client response. Never persist a
+            # refused (potentially harmful) exchange to long-term memory.
+            should_persist = (
+                False
+                if grader_denied
+                else _is_conversation_meaningful(
+                    user_prompt=payload.message,
+                    final_answer=full_response,
+                    tools_used=list(tools_used_set),
+                    loop_count=0,
+                )
             )
             if should_persist and full_response:
                 messages = [

@@ -11,10 +11,11 @@ memory.py       — mem0 user + store memory helpers (long-term)
 utils.py        — SSE streaming helpers and text formatting
 graph.py        — LangGraph graph assembly — build_graph()
 nodes/          — Individual node implementations:
-                     think         — LLM reasoning + tool selection
-                     memory_query  — conditionally fetches mem0 context
-                     tool          — executes tool calls
-                     observe       — converts results to messages, increments loop
+                      grader        — guardrail (safety check), runs first
+                      think         — LLM reasoning + tool selection
+                      memory_query  — conditionally fetches mem0 context
+                      tool          — executes tool calls
+                      observe       — converts results to messages, increments loop
 tools/          — Read-only tool implementations grouped by domain
 
 Memory persistence (mem0 write) is NOT a graph node. It runs as a

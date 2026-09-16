@@ -427,6 +427,28 @@ class VyaparAgentState(TypedDict):
     polluting memory with noise. Set to True when the user asks a real
     question, provides preferences, or the agent produces a substantive
     response with actual data/insights.
+
+    The grader node also sets this to False when it denies a request, so a
+    refused (potentially harmful) exchange is never persisted to mem0.
+    """
+
+    grader_denied: bool
+    """
+    Flag set by the grader (guardrail) node on the first graph step.
+
+    True  -> the user prompt was classified as harmful and the graph
+              terminated immediately with a refusal in ``final_answer``.
+    False -> the prompt passed the safety check and the graph continues to
+              the think node normally.
+    """
+
+    grader_reason: str
+    """
+    Short, human-readable explanation from the safety classifier.
+
+    Populated by the grader node whenever it runs. Empty string when the
+    prompt is safe or when classification produced no reason. Useful for
+    audit/logging without exposing classifier internals to the user.
     """
 
 
@@ -553,6 +575,9 @@ def make_initial_state(
         error=None,
         # 8. Memory persistence flag
         should_persist_memory=False,
+        # 9. Guardrail (grader node) — clean defaults
+        grader_denied=False,
+        grader_reason="",
     )
 
 

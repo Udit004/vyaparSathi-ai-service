@@ -21,7 +21,11 @@ Layout:
         ├── __init__.py
         ├── memory.py          # mem0 long-term memory summarizer
         ├── tool.py            # tool payload summarizer
-        └── history.py         # sliding-window history summarizer
+        ├── history.py         # sliding-window history summarizer
+        └── title.py           # short chat-title generation
+    └── classifier_prompts/    # instructions for the lightweight guardrail LLM
+        ├── __init__.py
+        └── harm_check.py      # harm-classification instruction for the grader
 """
 
 from app.agent.prompts.system_prompts import (
@@ -35,7 +39,9 @@ from app.agent.prompts.summarizer_prompts import (
     memory as summarizer_memory,
     tool as summarizer_tool,
     history as summarizer_history,
+    title as summarizer_title,
 )
+from app.agent.prompts.classifier_prompts import CLASSIFIER_HARM_INSTRUCTION
 
 __all__ = [
     "agent_base",
@@ -46,4 +52,6 @@ __all__ = [
     "summarizer_memory",
     "summarizer_tool",
     "summarizer_history",
+    "summarizer_title",
+    "CLASSIFIER_HARM_INSTRUCTION",
 ]
