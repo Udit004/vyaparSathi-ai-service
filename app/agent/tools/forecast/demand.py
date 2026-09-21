@@ -2,14 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Will use mock for demand since fetch_forecast_summary exists for forecast summary, but we will mock a specific demand function
-async def mock_fetch_demand(store_id: str, product_id: str, horizon_days: int) -> dict:
-    return {
-        "product_id": product_id,
-        "predicted_demand": 50.0,
-        "confidence_score": 0.85
-    }
+from app.agent.service import fetch_demand
 
 class DemandForecastInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -27,7 +20,7 @@ async def get_demand_forecast(store_id: str, product_id: str, horizon_days: int 
     """
     Predict future demand for a specific product over a given horizon.
     """
-    data = await mock_fetch_demand(store_id, product_id, horizon_days)
+    data = await fetch_demand(store_id, product_id, horizon_days)
     return DemandForecastOutput(
         **data,
         fetched_at=datetime.utcnow().isoformat()

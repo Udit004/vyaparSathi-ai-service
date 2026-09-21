@@ -1,27 +1,11 @@
-"""
-app/agent/service/insights/__init__.py
-======================================
-Operational insights derived from real sales and inventory data.
-
-Used by:
-    - app/agent/tools/insights/__init__.py (get_store_insights)
-
-Insights generated:
-    - Out of stock products (immediate restock)
-    - Dead stock (zero sales in 60 days, value tied up)
-    - Revenue leaders (top 3 by revenue in 30 days)
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from bson import ObjectId
-
 import structlog
-
 from app.config.database import get_database
 
-LOGGER = structlog.get_logger("vyaparsathi.ai.agent.service.insights")
+LOGGER = structlog.get_logger("vyaparsathi.ai.agent.service.insights.store_insights")
 
 # Days with zero sales before a product is considered "dead stock".
 DEAD_STOCK_DAYS = 60
@@ -32,7 +16,6 @@ MAX_OOS_LIST = 10
 MAX_DEAD_STOCK_LIST = 2000
 MAX_SOLD_IDS = 5000
 MAX_LEADERS = 3
-
 
 async def fetch_store_insights(store_id: str) -> list[dict]:
     """

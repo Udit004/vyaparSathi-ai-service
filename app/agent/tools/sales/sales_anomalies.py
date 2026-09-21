@@ -2,12 +2,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_sales_anomalies(store_id: str) -> list:
-    return [
-        {"product_id": "prod-x", "anomaly_type": "SPIKE", "description": "Sales spiked by 300% today."}
-    ]
+from app.agent.service import fetch_sales_anomalies
 
 class SalesAnomaliesInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -26,7 +21,7 @@ async def get_sales_anomalies(store_id: str) -> SalesAnomaliesOutput:
     """
     Detect unusual sales spikes or drops in the store.
     """
-    items = await mock_fetch_sales_anomalies(store_id)
+    items = await fetch_sales_anomalies(store_id)
     return SalesAnomaliesOutput(
         anomalies=[AnomalyItem(**i) for i in items],
         fetched_at=datetime.utcnow().isoformat()

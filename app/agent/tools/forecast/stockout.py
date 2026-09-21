@@ -2,14 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_stockout_estimate(store_id: str, product_id: str) -> dict:
-    return {
-        "product_id": product_id,
-        "estimated_stockout_date": "2023-11-01",
-        "days_remaining": 15
-    }
+from app.agent.service import fetch_stockout_estimate
 
 class StockoutInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -26,7 +19,7 @@ async def get_stockout_estimate(store_id: str, product_id: str) -> StockoutOutpu
     """
     Estimate when a specific product will run out of stock based on current sales velocity.
     """
-    data = await mock_fetch_stockout_estimate(store_id, product_id)
+    data = await fetch_stockout_estimate(store_id, product_id)
     return StockoutOutput(
         **data,
         fetched_at=datetime.utcnow().isoformat()

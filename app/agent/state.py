@@ -548,16 +548,9 @@ Kept low to respect LLM rate limits while still allowing
 memory queries + tool calls in a single run.
 """
 
-AVAILABLE_TOOLS: list[str] = [
-    "ask_for_clarification",
-    "get_inventory_summary",
-    "get_low_stock_products",
-    "get_sales_summary",
-    "get_top_selling_products",
-    "get_forecast_summary",
-    "get_restock_priorities",
-    "get_store_insights",
-]
+from app.agent.tools.registry import VYAPAR_TOOLS
+
+AVAILABLE_TOOLS: list[str] = [t.name for t in VYAPAR_TOOLS]
 """
 Master registry of read-only tool names available to the agent.
 All tools query MongoDB and return data — no write operations.

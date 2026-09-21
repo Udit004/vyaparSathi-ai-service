@@ -2,15 +2,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_product_performance(store_id: str, product_id: str) -> dict:
-    return {
-        "product_id": product_id,
-        "total_revenue": 1500.0,
-        "units_sold": 150,
-        "conversion_rate": 0.05
-    }
+from app.agent.service import fetch_product_performance
 
 class ProductPerformanceInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -28,7 +20,7 @@ async def get_product_performance(store_id: str, product_id: str) -> ProductPerf
     """
     Get detailed sales performance metrics for a specific product.
     """
-    data = await mock_fetch_product_performance(store_id, product_id)
+    data = await fetch_product_performance(store_id, product_id)
     return ProductPerformanceOutput(
         **data,
         fetched_at=datetime.utcnow().isoformat()

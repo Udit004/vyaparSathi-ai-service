@@ -2,15 +2,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_store_summary(store_id: str) -> dict:
-    return {
-        "store_id": store_id,
-        "name": "Main Store",
-        "location": "New York",
-        "status": "ACTIVE"
-    }
+from app.agent.service import fetch_store_summary
 
 class StoreSummaryInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -27,7 +19,7 @@ async def get_store_summary(store_id: str) -> StoreSummaryOutput:
     """
     Get general information and high-level stats for a store.
     """
-    data = await mock_fetch_store_summary(store_id)
+    data = await fetch_store_summary(store_id)
     return StoreSummaryOutput(
         **data,
         fetched_at=datetime.utcnow().isoformat()

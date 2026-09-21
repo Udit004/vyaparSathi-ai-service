@@ -1,26 +1,11 @@
-"""
-app/agent/service/forecast/__init__.py
-======================================
-Restock-priority and demand-forecast queries.
-
-Used by:
-    - app/agent/tools/forecast/__init__.py (get_restock_priorities, get_forecast_summary)
-
-Restock priorities are computed here from raw stock + real average daily
-sales (no ML model). Demand forecasts delegate to
-``app.services.aggregation_service.get_forecast_for_store``.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from bson import ObjectId
-
 import structlog
-
 from app.config.database import get_database
 
-LOGGER = structlog.get_logger("vyaparsathi.ai.agent.service.forecast")
+LOGGER = structlog.get_logger("vyaparsathi.ai.agent.service.forecast.restock")
 
 # Days between ordering and receiving stock.
 LEAD_TIME_DAYS = 3
@@ -42,9 +27,6 @@ async def fetch_restock_priorities(store_id: str) -> list[dict]:
         RED    — out of stock OR days_to_stockout <= lead_time
         YELLOW — days_to_stockout <= lead_time * 2
         GREEN  — healthy stock
-
-    Each item: { product_id, name, current_quantity, avg_daily_sales,
-                 days_to_stockout, suggested_restock_quantity, priority }
     """
     db = get_database()
     cutoff = datetime.utcnow() - timedelta(days=SALES_LOOKBACK_DAYS)
@@ -127,32 +109,3 @@ async def fetch_restock_priorities(store_id: str) -> list[dict]:
     )
 
     return output
-
-
-async def fetch_forecast_summary(store_id: str, horizon_days: int = 7) -> list[dict]:
-    """
-    Returns a demand forecast per product using avg daily sales * horizon_days.
-    Reuses existing aggregation_service logic but returns a clean dict list.
-    Each item: { product_id, name, current_stock, predicted_demand, days_to_stockout }
-    """
-    from app.services.aggregation_service import get_forecast_for_store
-
-    try:
-        forecasts = await get_forecast_for_store(store_id)
-    except Exception as exc:
-        LOGGER.error("fetch_forecast_summary_error", store_id=store_id, error=str(exc))
-        return []
-
-    return [
-        {
-            "product_id": f["productId"],
-            "name": f["productName"],
-            "current_stock": f["currentStock"],
-            "predicted_demand": round(f["predictedDailyDemand"] * horizon_days, 1),
-            "predicted_daily": f["predictedDailyDemand"],
-            "trend_percent": f["trendPercent"],
-            "days_to_stockout": f["daysToStockout"],
-            "horizon_days": horizon_days,
-        }
-        for f in forecasts
-    ]

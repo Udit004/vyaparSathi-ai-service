@@ -2,12 +2,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_dead_stock(store_id: str, days_inactive: int) -> list:
-    return [
-        {"product_id": "prod-4", "name": "Old Phone Case", "current_quantity": 50, "last_sold_date": "2023-01-15"}
-    ]
+from app.agent.service import fetch_dead_stock
 
 class DeadStockInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -29,7 +24,7 @@ async def get_dead_stock(store_id: str, days_inactive: int = 90) -> DeadStockOut
     """
     Identify dead stock - products that have not had any sales for a specified number of days.
     """
-    items = await mock_fetch_dead_stock(store_id, days_inactive)
+    items = await fetch_dead_stock(store_id, days_inactive)
     return DeadStockOutput(
         items=[DeadStockItem(**i) for i in items],
         count=len(items),

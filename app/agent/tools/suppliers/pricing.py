@@ -2,12 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_supplier_pricing(supplier_id: str, product_id: Optional[str] = None) -> list:
-    return [
-        {"product_id": "prod-1", "unit_price": 10.0, "bulk_discount_threshold": 100, "bulk_price": 9.0}
-    ]
+from app.agent.service import fetch_supplier_pricing
 
 class SupplierPricingInput(BaseModel):
     supplier_id: str = Field(..., description="The ID of the supplier.")
@@ -28,7 +23,7 @@ async def get_supplier_pricing(supplier_id: str, product_id: Optional[str] = Non
     """
     Get supplier pricing and bulk discount information for products.
     """
-    items = await mock_fetch_supplier_pricing(supplier_id, product_id)
+    items = await fetch_supplier_pricing(supplier_id, product_id)
     return SupplierPricingOutput(
         pricing=[PricingItem(**i) for i in items],
         fetched_at=datetime.utcnow().isoformat()

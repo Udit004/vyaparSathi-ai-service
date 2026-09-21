@@ -2,12 +2,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_product_history(store_id: str, product_id: str) -> list:
-    return [
-        {"date": "2023-01-01", "event_type": "PRICE_CHANGE", "details": "Price changed from 1.0 to 1.5"}
-    ]
+from app.agent.service import fetch_product_history
 
 class ProductHistoryInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -27,7 +22,7 @@ async def get_product_history(store_id: str, product_id: str) -> ProductHistoryO
     """
     Get price or update history for a product.
     """
-    items = await mock_fetch_product_history(store_id, product_id)
+    items = await fetch_product_history(store_id, product_id)
     return ProductHistoryOutput(
         events=[HistoryEvent(**i) for i in items],
         fetched_at=datetime.utcnow().isoformat()

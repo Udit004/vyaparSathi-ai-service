@@ -2,17 +2,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from datetime import datetime
-
-# Mock service function
-async def mock_fetch_product_details(store_id: str, product_id: str) -> dict:
-    return {
-        "product_id": product_id,
-        "name": "Apple",
-        "category": "Fruits",
-        "description": "A red apple",
-        "price": 1.5,
-        "sku": "APP-001"
-    }
+from app.agent.service import fetch_product_details
 
 class ProductDetailsInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
@@ -32,7 +22,7 @@ async def get_product_details(store_id: str, product_id: str) -> ProductDetailsO
     """
     Get full details and metadata for a single product.
     """
-    data = await mock_fetch_product_details(store_id, product_id)
+    data = await fetch_product_details(store_id, product_id)
     return ProductDetailsOutput(
         **data,
         fetched_at=datetime.utcnow().isoformat()
