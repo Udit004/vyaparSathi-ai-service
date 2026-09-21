@@ -1,10 +1,10 @@
 """
-app/services/agent/insights.py
-=================================
+app/agent/service/insights/__init__.py
+======================================
 Operational insights derived from real sales and inventory data.
 
 Used by:
-    - app/agent/tools/insights.py (get_store_insights)
+    - app/agent/tools/insights/__init__.py (get_store_insights)
 
 Insights generated:
     - Out of stock products (immediate restock)

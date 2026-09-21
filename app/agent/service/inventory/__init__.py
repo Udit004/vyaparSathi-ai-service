@@ -1,10 +1,10 @@
 """
-app/services/agent/inventory.py
-=================================
+app/agent/service/inventory/__init__.py
+==========================================
 Inventory queries against the MongoDB ``products`` collection.
 
 Used by:
-    - app/agent/tools/inventory.py (get_inventory_summary, get_low_stock_products)
+    - app/agent/tools/inventory/__init__.py (get_inventory_summary, get_low_stock_products)
 
 All functions are async and use the shared motor client from
 app.config.database.

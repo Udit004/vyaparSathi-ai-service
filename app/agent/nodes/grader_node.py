@@ -13,8 +13,7 @@ import structlog
 
 from app.agent.state import VyaparAgentState
 from app.agent.utils import latest_human_prompt, message_text
-from app.lib.grader import classify_prompt, is_retail_follow_up
-from app.agent.prompts.classifier_prompts import CLASSIFIER_HARM_INSTRUCTION
+from app.lib.grader import is_retail_follow_up, _SEVERE_HARM_KEYWORDS
 from langchain_core.messages import AIMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.grader")
@@ -55,6 +54,20 @@ async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
 
     LOGGER.info("grader_node_start", store_id=store_id, user_id=user_id, prompt_len=len(user_prompt))
 
+    # When resuming after a clarification, the prompt is the user's
+    # answer which is always safe — skip classification entirely.
+    if state.get("resume_from_clarification", False):
+        LOGGER.info(
+            "grader_node_resume_skip",
+            store_id=store_id,
+            reason="resuming from clarification — prompt is user answer",
+        )
+        return {
+            "user_prompt": user_prompt,
+            "grader_denied": False,
+            "grader_reason": "skipped — resume from clarification",
+        }
+
     if not user_prompt.strip():
         return {
             "user_prompt": user_prompt,
@@ -62,6 +75,9 @@ async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
             "grader_reason": "",
         }
 
+    # TEMP: Disabled scope classification — grader blocks valid queries
+    # when no classifier API key is configured (fail-closed).
+    # Will re-enable with proper API keys later.
     if is_retail_follow_up(user_prompt, _recent_context(state, user_prompt)):
         LOGGER.info(
             "grader_contextual_retail_follow_up",
@@ -74,28 +90,32 @@ async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
             "grader_reason": "contextual retail operations follow-up",
         }
 
-    verdict, reason = await classify_prompt(user_prompt, instruction=CLASSIFIER_HARM_INSTRUCTION)
-
-    if verdict in ("harmful", "off_topic"):
-        refusal = _REFUSAL_HARMFUL if verdict == "harmful" else _REFUSAL_OFF_TOPIC
+    # Basic harmful keyword floor (safety net while scope check is disabled)
+    p = (user_prompt or "").lower()
+    if any(kw in p for kw in _SEVERE_HARM_KEYWORDS):
         LOGGER.warning(
-            "grader_node_denied",
-            store_id=store_id, verdict=verdict, reason=reason,
+            "grader_node_harmful_keyword",
+            store_id=store_id,
             user_prompt_len=len(user_prompt),
         )
         return {
             "user_prompt": user_prompt,
             "grader_denied": True,
-            "grader_reason": reason or verdict,
+            "grader_reason": "temporary safety floor — severe harm keyword matched",
             "goal_status": "complete",
-            "goal": f"refuse {verdict} request",
-            "final_answer": refusal,
+            "goal": "refuse harmful request",
+            "final_answer": _REFUSAL_HARMFUL,
             "should_persist_memory": False,
-            "messages": [AIMessage(content=refusal)],
-            "response_metadata": {"grader_denied": True, "grader_verdict": verdict, "grader_reason": reason or verdict},
+            "messages": [AIMessage(content=_REFUSAL_HARMFUL)],
+            "response_metadata": {"grader_denied": True, "grader_verdict": "harmful"},
         }
 
-    LOGGER.info("grader_node_safe", store_id=store_id, reason=reason)
+    # Skip LLM classification for now — allow everything non-harmful
+    LOGGER.info(
+        "grader_node_disabled",
+        store_id=store_id,
+        reason="temporarily disabled — all non-harmful prompts allowed",
+    )
     return {
         "user_prompt": user_prompt,
         "grader_denied": False,

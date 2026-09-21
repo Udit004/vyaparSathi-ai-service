@@ -14,12 +14,15 @@ Endpoints:
 """
 
 import json
+import asyncio
 import uuid
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any
+
+from langgraph.errors import GraphInterrupt
 
 from app.services.aggregation_service import (
     get_forecast_for_store,
@@ -87,6 +90,176 @@ class ApiResponse(BaseModel):
     data: Any
     message: str
     statusCode: int = 200
+
+
+# ---------------------------------------------------------------------------
+# Shared SSE streaming helper — used by both /copilot/stream and /clarify
+# ---------------------------------------------------------------------------
+
+
+async def _stream_graph_events(
+    graph,
+    graph_input: Any,
+    config: dict,
+    *,
+    tools_used_set: set,
+    result: dict,
+):
+    """
+    Async generator that processes LangGraph ``astream_events`` and yields
+    SSE-formatted strings.
+
+    Shared by the ``/copilot/stream`` (new run) and ``/clarify`` (resume)
+    endpoints so inter­rupt detection and event handling stay consistent.
+
+    Yields SSE event strings (``event: token\\ndata: ...\\n\\n`` etc.).
+
+    After the generator completes, the mutable ``result`` dict is updated
+    with:
+        full_response       — accumulated assistant text (may be empty)
+        interrupt_payloads  — list of langgraph Interrupt objects (empty
+                              if the graph ran to completion)
+        error               — set to the error string if an exception
+                              was raised inside the generator
+    """
+    assistant_text_parts: list[str] = []
+    interrupt_payloads: list = []
+
+    try:
+        LOGGER.info(
+            "graph_stream_start",
+            input_type=type(graph_input).__name__,
+        )
+        async for event in graph.astream_events(
+            graph_input, config=config, version="v2"
+        ):
+            kind = event["event"]
+            name = event["name"]
+            data = event.get("data", {}) or {}
+
+            LOGGER.debug(
+                "graph_event_received",
+                kind=kind,
+                name=name,
+            )
+
+            # --- Interrupt detection ---
+            # When langgraph.types.interrupt() fires, the runtime emits
+            # an on_chain_stream event whose chunk contains a __interrupt__
+            # key with the Interrupt objects. These are the payloads we
+            # passed to interrupt().
+            chunk = data.get("chunk")
+            if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                for intr in chunk["__interrupt__"]:
+                    interrupt_payloads.append(intr)
+                # The stream will end shortly after this event — no
+                # further processing needed for this event.
+                continue
+
+            # --- Track tool usage ---
+            if kind == "on_tool_end":
+                tools_used_set.add(name)
+
+            # --- Stream LLM tokens ---
+            if kind == "on_chat_model_stream":
+                msg_chunk = event["data"]["chunk"]
+                if msg_chunk.content:
+                    text = _flatten_text(msg_chunk.content)
+                    assistant_text_parts.append(text)
+                    yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
+
+            # --- Tool call events ---
+            elif kind == "on_tool_start":
+                tool_input = data.get("input", {}) or {}
+                tool_payload = json.dumps(
+                    {
+                        "id": f"tool-{name}-{len(tools_used_set)}",
+                        "name": name,
+                        "args": tool_input,
+                        "status": "running",
+                    },
+                    default=_json_default,
+                )
+                yield f"event: tool_call\ndata: {tool_payload}\n\n"
+
+            elif kind == "on_tool_end":
+                tool_output = data.get("output", {})
+                tool_result = getattr(tool_output, "content", tool_output)
+                tool_payload = json.dumps(
+                    {
+                        "id": f"tool-{name}-{len(tools_used_set)}",
+                        "name": name,
+                        "result": tool_result,
+                        "status": "completed",
+                    },
+                    default=_json_default,
+                )
+                yield f"event: tool_call\ndata: {tool_payload}\n\n"
+
+            # --- Memory query notifications ---
+            elif kind == "on_chain_start" and name == "memory_query":
+                yield f"event: token\ndata: {json.dumps({'text': '\n_[Loading long-term memory...]_\n'})}\n\n"
+
+            elif kind == "on_chain_end" and name == "memory_query":
+                yield f"event: token\ndata: {json.dumps({'text': '\n_[Memory loaded.]_\n'})}\n\n"
+
+        # --- Post-stream: populate result dict ---
+        result["full_response"] = "".join(
+            _flatten_text(p) for p in assistant_text_parts
+        )
+        result["interrupt_payloads"] = interrupt_payloads
+
+        LOGGER.info(
+            "graph_stream_completed",
+            full_response_len=len(result["full_response"]),
+            interrupt_count=len(interrupt_payloads),
+        )
+
+    except GraphInterrupt as exc:
+        LOGGER.warning(
+            "graph_stream_interrupted",
+            exc_info=True,
+        )
+        # Defensive: astream_events should surface interrupts via
+        # __interrupt__ chunks, but if GraphInterrupt leaks to the
+        # caller, we can still extract the interrupt values from
+        # the exception's args[0] (a list of Interrupt objects).
+        interrupts = exc.args[0] if exc.args else []
+        for intr in interrupts:
+            interrupt_payloads.append(intr)
+        result["interrupt_payloads"] = interrupt_payloads
+        result["full_response"] = "".join(
+            _flatten_text(p) for p in assistant_text_parts
+        )
+    except (Exception, asyncio.CancelledError) as exc:
+        LOGGER.error(
+            "graph_stream_error",
+            error=str(exc),
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+        result["interrupt_payloads"] = []
+        result["full_response"] = "".join(
+            _flatten_text(p) for p in assistant_text_parts
+        )
+        yield f"event: error\ndata: {json.dumps({'message': str(exc)}, default=_json_default)}\n\n"
+
+
+def _extract_interrupt_question(interrupt_payloads: list) -> str:
+    """Extract the clarification question from a list of Interrupt objects."""
+    if not interrupt_payloads:
+        return ""
+    for intr in interrupt_payloads:
+        val = intr.value
+        if isinstance(val, dict):
+            q = val.get("question", "")
+            if q:
+                return q
+        else:
+            text = str(val)
+            if text:
+                return text
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +451,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     The frontend sends ``chat_id`` (preferred) or the legacy ``session_id``.
     """
     from app.agent import build_graph, get_checkpointer, make_initial_state
-    from app.agent.memory import add_user_memory, add_store_memory, curate_memory_messages
     from app.agent.nodes.think_node import _is_conversation_meaningful
-    import asyncio
 
     user_id = request.headers.get("x-user-id", "default_user")
 
@@ -297,13 +468,10 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
     # Persist the user message
     await add_user_message(chat_id, payload.message)
 
-    # Accumulator for the assistant's streamed text
-    assistant_text_parts: list[str] = []
-    # Track tool usage
+    # Track tool usage (mutated in place by the shared SSE helper)
     tools_used_set: set[str] = set()
 
     async def event_generator():
-        nonlocal tools_used_set
         try:
             checkpointer = get_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
@@ -317,75 +485,79 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
 
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Stream execution events
-            async for event in graph.astream_events(initial_state, config=config, version="v2"):
-                kind = event["event"]
-                name = event["name"]
-                data = event.get("data", {}) or {}
+            result: dict = {}
 
-                # Track tool usage
-                if kind == "on_tool_end":
-                    tools_used_set.add(name)
+            # Stream graph events via the shared helper — yields SSE
+            # strings for tokens, tool calls, memory notifications, and
+            # error events. Interrupts are captured in result["interrupt_payloads"].
+            async for sse in _stream_graph_events(
+                graph,
+                initial_state,
+                config,
+                tools_used_set=tools_used_set,
+                result=result,
+            ):
+                yield sse
 
-                # Stream LLM chunks directly to the UI
-                if kind == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
-                    if chunk.content:
-                        # Some providers stream content as a list of blocks
-                        # (e.g. [{"type": "text", "text": "..."}]). Flatten
-                        # it to a plain string here so the accumulator and
-                        # the downstream "".join() never receive a list —
-                        # that would raise "sequence item 0: expected str
-                        # instance, list found" AFTER the stream finished,
-                        # causing the response to appear truncated.
-                        text = _flatten_text(chunk.content)
-                        assistant_text_parts.append(text)
-                        data = json.dumps({"text": text})
-                        yield f"event: token\ndata: {data}\n\n"
+            # --- Interrupt handling ---
+            # When langgraph.types.interrupt() fires inside the interrupt_node,
+            # the stream ends and the interrupt payloads are captured by the
+            # helper. We detect this and emit a clarification SSE event.
+            #
+            # The graph is now PAUSED (not terminated) — the client must
+            # call POST /{store_id}/clarify to resume with Command(resume=...).
+            interrupt_payloads = result.get("interrupt_payloads", [])
 
-                # Emit a structured tool_call event so the frontend can
-                # render the LLM's reasoning trace (which tools it called,
-                # with what arguments, and what they returned).
-                elif kind == "on_tool_start":
-                    tool_input = data.get("input", {}) or {}
-                    tool_payload = json.dumps({
-                        "id": f"tool-{name}-{len(tools_used_set)}",
-                        "name": name,
-                        "args": tool_input,
-                        "status": "running",
-                    }, default=_json_default)
-                    yield f"event: tool_call\ndata: {tool_payload}\n\n"
+            if interrupt_payloads:
+                question = _extract_interrupt_question(interrupt_payloads)
+                if not question:
+                    question = (
+                        "I need some additional information to give you "
+                        "an accurate answer. Could you help me with a few "
+                        "details?"
+                    )
 
-                elif kind == "on_tool_end":
-                    tool_output = data.get("output", {})
-                    # LangChain tool outputs are ToolMessage-like objects;
-                    # extract their content for the frontend.
-                    result = getattr(tool_output, "content", tool_output)
-                    tool_payload = json.dumps({
-                        "id": f"tool-{name}-{len(tools_used_set)}",
-                        "name": name,
-                        "result": result,
-                        "status": "completed",
-                    }, default=_json_default)
-                    yield f"event: tool_call\ndata: {tool_payload}\n\n"
+                LOGGER.info(
+                    "copilot_stream_clarification_needed",
+                    store_id=store_id,
+                    chat_id=chat_id,
+                    prompt=question[:200],
+                )
 
-                # Notify frontend when memory is being queried
-                elif kind == "on_chain_start" and name == "memory_query":
-                    data = json.dumps({"text": "\n_[Loading long-term memory...]_\n"})
-                    yield f"event: token\ndata: {data}\n\n"
+                clarification_event = json.dumps({
+                    "question": question,
+                    "chatId": chat_id,
+                    "threadId": thread_id,
+                }, default=_json_default)
+                yield f"event: clarification\ndata: {clarification_event}\n\n"
 
-                elif kind == "on_chain_end" and name == "memory_query":
-                    data = json.dumps({"text": "\n_[Memory loaded.]_\n"})
-                    yield f"event: token\ndata: {data}\n\n"
+                await add_assistant_message(
+                    chat_id,
+                    f"[CLARIFICATION] {question}",
+                    metadata={
+                        "thread_id": thread_id,
+                        "needs_clarification": True,
+                    },
+                )
 
-            # After graph completes, assemble the full assistant response.
-            full_response = "".join(_flatten_text(p) for p in assistant_text_parts)
-            grader_denied = False
+                session_data = json.dumps({
+                    "chatId": chat_id,
+                    "threadId": thread_id,
+                    "title": await ensure_chat_title(chat_id, payload.message),
+                    "needsClarification": True,
+                }, default=_json_default)
+                yield f"event: session\ndata: {session_data}\n\n"
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            # --- Normal completion path ---
+            full_response = result.get("full_response", "")
 
             # When the grader denies the request no LLM tokens are streamed,
             # so fall back to the refusal stored in graph state and emit it
             # to the client as token events so the refusal is visible.
-            if not full_response:
+            grader_denied = False
+            if not full_response and not result.get("error"):
                 try:
                     final_state = await graph.aget_state(config)
                     values = final_state.values or {}
@@ -408,29 +580,31 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                         error=str(exc),
                     )
 
+            if result.get("error"):
+                yield "event: done\ndata: {}\n\n"
+                return
+
             # Persist the assistant response to chat history
             if full_response:
                 await add_assistant_message(
                     chat_id,
                     full_response,
-                    metadata={"thread_id": thread_id, "grader_denied": grader_denied},
+                    metadata={
+                        "thread_id": thread_id,
+                        "grader_denied": grader_denied,
+                    },
                 )
 
-            # Generate a title for new chats (first exchange) so the
-            # frontend sidebar shows a meaningful name instead of "New Chat".
-            # This runs after the assistant message is persisted so the
-            # title reflects the actual first user message.
             chat_title = await ensure_chat_title(chat_id, payload.message)
 
-            # Emit session metadata so the frontend can store the chat_id
             session_data = json.dumps({
                 "chatId": chat_id,
                 "threadId": thread_id,
                 "title": chat_title,
+                "needsClarification": False,
             }, default=_json_default)
             yield f"event: session\ndata: {session_data}\n\n"
 
-            # End of stream
             yield "event: done\ndata: {}\n\n"
 
             # After SSE stream is fully sent, persist to mem0 in background
@@ -460,10 +634,294 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 )
 
         except (Exception, asyncio.CancelledError) as e:
-            # Send error in stream
             error_data = json.dumps({"message": str(e)}, default=_json_default)
             yield f"event: error\ndata: {error_data}\n\n"
             yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Clarify endpoint — user responds to a clarification question
+# ---------------------------------------------------------------------------
+
+
+class ClarifyRequest(BaseModel):
+    chat_id: str
+    answer: str
+
+
+@router.post("/{store_id}/clarify")
+async def clarify(
+    store_id: str,
+    request: Request,
+    payload: ClarifyRequest,
+):
+    """
+    User responds to a clarification question from the agent.
+
+    This RESUMES the previously interrupted graph using
+    ``Command(resume=<answer>)`` with the same ``thread_id``.
+    LangGraph loads the saved checkpoint, re-executes the interrupt
+    node from the beginning, and the ``interrupt()`` call returns the
+    user's answer. The answer is stored in ``clarification_history``
+    and the graph loops back to ``think`` so the LLM can incorporate
+    the answer and continue.
+
+    If the graph is not in an interrupted state (e.g. it already
+    completed or the checkpoint was lost), an error SSE event is
+    emitted and the client should start a new conversation.
+    """
+    from app.agent import build_graph, get_checkpointer
+    from langgraph.types import Command
+    from app.agent.nodes.think_node import _is_conversation_meaningful
+
+    user_id = request.headers.get("x-user-id", "default_user")
+
+    LOGGER.info(
+        "clarify_request_received",
+        store_id=store_id,
+        chat_id=payload.chat_id,
+        answer_preview=payload.answer[:100] if payload.answer else "",
+        user_id=user_id,
+    )
+
+    # Resolve the chat session (existing — the graph must already be
+    # interrupted on this thread for the resume to work).
+    chat_session = await get_or_create_chat_session(
+        user_id=user_id,
+        store_id=store_id,
+        chat_id=payload.chat_id,
+    )
+
+    chat_id = chat_session.chat_id
+    thread_id = chat_session.thread_id
+
+    LOGGER.info(
+        "clarify_session_resolved",
+        chat_id=chat_id,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+    # Persist the user's clarification answer to chat history
+    await add_user_message(chat_id, payload.answer)
+
+    LOGGER.info("clarify_message_persisted", chat_id=chat_id)
+
+    graph = build_graph(checkpointer=get_checkpointer())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    tools_used_set: set[str] = set()
+
+    async def event_generator():
+        result: dict = {}
+
+        try:
+            LOGGER.info("clarify_guard_check_start", chat_id=chat_id, thread_id=thread_id)
+            # ----------------------------------------------------------
+            # Guard: verify the graph is actually interrupted before
+            # attempting a resume. If state.next is non-empty, the
+            # runtime has a pending node to execute (the interrupted
+            # node). If it's empty, the graph already completed.
+            # ----------------------------------------------------------
+            try:
+                current_state = await graph.aget_state(config)
+                state_next = list(current_state.next) if current_state.next else []
+                state_values_keys = list((current_state.values or {}).keys()) if current_state.values else []
+                LOGGER.info(
+                    "clarify_guard_check_result",
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    state_next=state_next,
+                    has_values=bool(current_state.values),
+                    value_keys=state_values_keys[:10],
+                )
+                if not current_state.next:
+                    LOGGER.warning(
+                        "clarify_no_pending_interrupt",
+                        store_id=store_id,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                    )
+                    error_data = json.dumps(
+                        {"message": "No pending clarification to resume. Please start a new conversation."},
+                        default=_json_default,
+                    )
+                    yield f"event: error\ndata: {error_data}\n\n"
+                    yield "event: done\ndata: {}\n\n"
+                    return
+            except Exception as state_exc:
+                LOGGER.warning(
+                    "clarify_state_check_failed",
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    error=str(state_exc),
+                    exc_info=True,
+                )
+                error_data = json.dumps(
+                    {"message": "Could not load graph state for resume. Please start a new conversation."},
+                    default=_json_default,
+                )
+                yield f"event: error\ndata: {error_data}\n\n"
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            LOGGER.info(
+                "clarify_resume_start",
+                chat_id=chat_id,
+                thread_id=thread_id,
+                answer_preview=payload.answer[:100],
+            )
+
+            # ----------------------------------------------------------
+            # Resume the interrupted graph.
+            #
+            # Command(resume=<answer>) is the ONLY Command pattern
+            # intended as input to invoke()/astream_events(). The
+            # runtime matches the resume value to the pending interrupt()
+            # call by index, and interrupt() returns the answer inside
+            # the interrupt_node.
+            # ----------------------------------------------------------
+            async for sse in _stream_graph_events(
+                graph,
+                Command(resume=payload.answer),
+                config,
+                tools_used_set=tools_used_set,
+                result=result,
+            ):
+                yield sse
+
+            LOGGER.info(
+                "clarify_resume_completed",
+                chat_id=chat_id,
+                thread_id=thread_id,
+                interrupt_payloads=len(result.get("interrupt_payloads", [])),
+                has_error=bool(result.get("error")),
+            )
+
+            # ----------------------------------------------------------
+            # Handle recursive clarification (the LLM may still need
+            # more information after incorporating the first answer).
+            # ----------------------------------------------------------
+            interrupt_payloads = result.get("interrupt_payloads", [])
+            if interrupt_payloads:
+                question = _extract_interrupt_question(interrupt_payloads)
+                if not question:
+                    question = "I need more information."
+
+                LOGGER.info(
+                    "clarify_recursive_clarification",
+                    store_id=store_id,
+                    chat_id=chat_id,
+                )
+
+                yield f"event: clarification\ndata: {json.dumps({'question': question, 'chatId': chat_id, 'threadId': thread_id}, default=_json_default)}\n\n"
+
+                await add_assistant_message(
+                    chat_id,
+                    f"[CLARIFICATION] {question}",
+                    metadata={"thread_id": thread_id, "needs_clarification": True},
+                )
+
+                session_data = json.dumps(
+                    {
+                        "chatId": chat_id,
+                        "threadId": thread_id,
+                        "title": await ensure_chat_title(chat_id, payload.answer),
+                        "needsClarification": True,
+                    },
+                    default=_json_default,
+                )
+                yield f"event: session\ndata: {session_data}\n\n"
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            # ----------------------------------------------------------
+            # Normal completion — the graph finished without further
+            # clarification needs.
+            # ----------------------------------------------------------
+            full_response = result.get("full_response", "")
+
+            # Grader denial fallback (no tokens may have streamed)
+            grader_denied = False
+            if not full_response and not result.get("error"):
+                try:
+                    final_state = await graph.aget_state(config)
+                    values = final_state.values or {}
+                    grader_denied = bool(values.get("grader_denied"))
+                    state_answer = values.get("final_answer") or ""
+                    if grader_denied and state_answer:
+                        yield f"event: token\ndata: {json.dumps({'text': state_answer})}\n\n"
+                        full_response = state_answer
+                except Exception:
+                    pass
+
+            if result.get("error"):
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            # Persist the assistant response to chat history
+            if full_response:
+                await add_assistant_message(
+                    chat_id,
+                    full_response,
+                    metadata={"thread_id": thread_id},
+                )
+
+            # Emit session metadata
+            session_data = json.dumps(
+                {
+                    "chatId": chat_id,
+                    "threadId": thread_id,
+                    "title": await ensure_chat_title(chat_id, payload.answer),
+                },
+                default=_json_default,
+            )
+            yield f"event: session\ndata: {session_data}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+            # Background memory persistence
+            should_persist = _is_conversation_meaningful(
+                user_prompt=payload.answer,
+                final_answer=full_response,
+                tools_used=list(tools_used_set),
+                loop_count=0,
+            )
+            if should_persist and full_response:
+                messages = [
+                    {"role": "user", "content": payload.answer},
+                    {"role": "assistant", "content": full_response},
+                ]
+                asyncio.create_task(
+                    _persist_memory_background(
+                        user_id=user_id,
+                        store_id=store_id,
+                        messages=messages,
+                    )
+                )
+
+        except (Exception, asyncio.CancelledError) as e:
+            LOGGER.error(
+                "clarify_stream_error",
+                chat_id=chat_id,
+                thread_id=thread_id,
+                error=str(e),
+                exc_info=True,
+            )
+            error_data = json.dumps({"message": str(e)}, default=_json_default)
+            yield f"event: error\ndata: {error_data}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+    LOGGER.info("clarify_sse_response_returned", chat_id=chat_id)
 
     return StreamingResponse(
         event_generator(),
@@ -492,7 +950,7 @@ async def _persist_memory_background(
     Runs after the SSE stream has completed and the client has received
     the response. Failures are logged but never affect the client.
     """
-    from app.agent.memory import add_user_memory, add_store_memory
+    from app.agent.memory import add_user_memory, add_store_memory, curate_memory_messages
     import structlog
 
     logger = structlog.get_logger("vyaparsathi.ai.memory.background")

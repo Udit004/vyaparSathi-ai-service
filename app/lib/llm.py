@@ -34,7 +34,7 @@ from app.config.settings import get_settings
 LOGGER = structlog.get_logger("vyaparsathi.ai.llm")
 
 
-def _build_gemini(model: str) -> Any:
+def _build_gemini(model: str, **kwargs) -> Any:
     """Build a ChatGoogleGenerativeAI instance for the given model."""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -47,7 +47,7 @@ def _build_gemini(model: str) -> Any:
     )
 
 
-def _build_openai(model: str, *, base_url: str) -> Any:
+def _build_openai(model: str, *, base_url: str, api_key: str) -> Any:
     """
     Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint.
 
@@ -56,12 +56,17 @@ def _build_openai(model: str, *, base_url: str) -> Any:
     provider-specific model names (e.g. ``nvidia/llama-3.1-8b-instruct``)
     cannot be resolved. Each fallback entry in ``_PROVIDERS`` binds the
     correct ``base_url`` via ``functools.partial``.
+
+    ``api_key`` is the provider-specific API key (GROQ_API_KEY or NVIDIA_API_KEY)
+    passed explicitly so ChatOpenAI does not rely on the generic
+    ``OPENAI_API_KEY`` environment variable.
     """
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
         model=model,
         base_url=base_url,
+        api_key=api_key,
         temperature=0.3,
         max_retries=0,
     )
@@ -91,15 +96,23 @@ _OPENAI_BASE_URL = {
 }
 
 # Each entry: (provider_name, model_id, build_fn, api_key_env)
-# The order here IS the fallback order. Lightweight OpenAI-compatible members
-# (NVIDIA + GROQ) keep Gemini quota reserved for the main think node; the
-# guarder node uses the dedicated openai/gpt-oss-safeguard-20b model.
+# The order here IS the fallback order.
+# Strategy:
+#   1. gemini-2.5-flash      — primary reasoning model (best quality)
+#   2. openai/gpt-oss-120b  — Groq fallback (high rate limits, fast, free tier)
+#   3. nvidia/llama-3.1-8b-instruct — NVIDIA fallback (fast, cheap)
+#   4. gpt-oss-20b           — Groq lightweight fallback
+#   5. gemini-2.5-flash-lite  — last resort (rate-limited, 20/day free tier)
+#   6. openai/gpt-oss-safeguard-20b — safety classifier (not used by think node)
+# OpenAI-compatible members (NVIDIA + GROQ) keep Gemini quota reserved
+# for when the other providers are unavailable. The guarder node uses
+# the dedicated openai/gpt-oss-safeguard-20b model.
 _PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI_API_KEY"),
-    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI_API_KEY"),
+    ("groq120b", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
     ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA_API_KEY"),
     ("groq", "gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
-    ("groq120b", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI_API_KEY"),
     ("groqGuard", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
 ]
 
@@ -187,7 +200,7 @@ def get_llm():
             LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
             continue
         try:
-            llm = build_fn(model)
+            llm = build_fn(model, api_key=api_key)
             members.append(llm)
             names.append(f"{provider_name}/{model}")
             LOGGER.info(

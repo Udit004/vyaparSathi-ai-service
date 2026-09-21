@@ -1,10 +1,10 @@
 """
-app/services/agent/forecast.py
-=================================
+app/agent/service/forecast/__init__.py
+======================================
 Restock-priority and demand-forecast queries.
 
 Used by:
-    - app/agent/tools/forecast.py (get_restock_priorities, get_forecast_summary)
+    - app/agent/tools/forecast/__init__.py (get_restock_priorities, get_forecast_summary)
 
 Restock priorities are computed here from raw stock + real average daily
 sales (no ML model). Demand forecasts delegate to

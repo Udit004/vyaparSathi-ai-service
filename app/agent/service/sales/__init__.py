@@ -1,10 +1,10 @@
 """
-app/services/agent/sales.py
-==============================
+app/agent/service/sales/__init__.py
+===============================
 Sales queries against the MongoDB ``sales`` collection.
 
 Used by:
-    - app/agent/tools/sales.py (get_sales_summary, get_top_selling_products)
+    - app/agent/tools/sales/__init__.py (get_sales_summary, get_top_selling_products)
 
 All functions are async and use the shared motor client from
 app.config.database.

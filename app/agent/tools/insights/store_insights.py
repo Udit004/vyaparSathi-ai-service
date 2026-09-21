@@ -5,8 +5,6 @@ from datetime import datetime
 
 from app.agent.service import fetch_store_insights
 
-# --- Schemas ---
-
 class StoreInsightsInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
 
@@ -24,9 +22,6 @@ class StoreInsightsOutput(BaseModel):
     insights: List[InsightResult]
     insight_count: int
     fetched_at: str
-
-
-# --- Tool ---
 
 @tool("get_store_insights", args_schema=StoreInsightsInput)
 async def get_store_insights(store_id: str) -> StoreInsightsOutput:

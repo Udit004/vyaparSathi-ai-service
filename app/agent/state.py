@@ -458,6 +458,60 @@ class VyaparAgentState(TypedDict):
     audit/logging without exposing classifier internals to the user.
     """
 
+    resume_from_clarification: bool
+    """
+    Flag set to True by the interrupt node when it stores the user's
+    answer and returns, so the think node can detect it is continuing
+    after a clarification exchange.
+
+    Note: the primary resume mechanism is LangGraph's native
+    interrupt()/Command(resume=...) — the grader and intent nodes
+    do NOT re-run when the graph is resumed from an interrupt.
+    This flag is kept for backward compatibility and as a signal
+    to downstream nodes that a clarification exchange occurred.
+    """
+
+    needs_clarification: bool
+    """
+    Flag set by the interrupt node (or think node) when the agent
+    cannot proceed confidently and needs input from the user.
+
+    True  → the interrupt node has called langgraph.types.interrupt()
+            with a question payload; the graph is PAUSED at the
+            interrupt point. The route handler detects this and emits
+            a ``clarification`` SSE event. The graph resumes when
+            the client calls POST /{store_id}/clarify with the user's
+            answer, which invokes ``Command(resume=<answer>)``.
+    False → the agent does not need clarification (default).
+    """
+
+    clarification_prompt: str
+    """
+    The specific question the agent wants to ask the user.
+
+    Populated by the think node when it decides clarification is needed
+    (carried forward to the interrupt node, which passes it as the
+    payload to langgraph.types.interrupt()). On resume, the interrupt
+    node clears this to "".
+    Empty string when no clarification is needed.
+    """
+
+    clarification_history: list[dict[str, Any]]
+    """
+    All clarification exchanges in the current graph run.
+
+    Each entry is a dict:
+        {
+            "question": str,   ← what the agent asked
+            "answer": str,     ← what the user said (may be empty if pending)
+            "reason": str,     ← why the agent needed clarification
+        }
+
+    This list is seeded from the graph config (``clarification_history``)
+    on each graph invocation so that answers from previous clarification
+    turns are visible to the LLM when the graph resumes.
+    """
+
 
 # ---------------------------------------------------------------------------
 # AgentConfig — runtime configuration (NOT part of the graph state)
@@ -495,6 +549,7 @@ memory queries + tool calls in a single run.
 """
 
 AVAILABLE_TOOLS: list[str] = [
+    "ask_for_clarification",
     "get_inventory_summary",
     "get_low_stock_products",
     "get_sales_summary",
@@ -520,6 +575,8 @@ def make_initial_state(
     store_id: str,
     user_prompt: str,
     thread_id: str | None = None,
+    clarification_history: list[dict[str, Any]] | None = None,
+    resume_from_clarification: bool = False,
 ) -> VyaparAgentState:
     """
     Create a clean VyaparAgentState for a new agent run.
@@ -587,6 +644,11 @@ def make_initial_state(
         # 9. Guardrail (grader node) — clean defaults
         grader_denied=False,
         grader_reason="",
+        # 10. Clarification / interrupt
+        needs_clarification=False,
+        clarification_prompt="",
+        clarification_history=clarification_history or [],
+        resume_from_clarification=resume_from_clarification,
     )
 
 

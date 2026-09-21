@@ -9,7 +9,13 @@ Graph flow
               ┌──────────────────┐
               │   grader node     │  ← entry point (guardrail)
               │  (safety check)   │      harmful prompt → END (refusal)
-              └──────┬───────────┘      safe prompt      → think
+              └──────┬───────────┘      safe prompt      → intent
+                     │
+                     ▼
+              ┌──────────────┐
+              │  intent node  │
+              │  (routing)    │
+              └──────┬───────────┘
                      │
                      ▼
               ┌──────────────┐
@@ -17,36 +23,31 @@ Graph flow
               │  (LLM reasoning)  │
               └──────┬───────────┘
                      │
-          ┌──────────┼──────────┐
-          │          │          │
-        memory_query    pending_tool     goal_status
-          needed?         calls?         == "complete"
-                  │              │              │
-                  ▼              ▼              ▼
-          ┌──────────┐  ┌──────────┐  ┌──────────────┐
-          │ memory   │  │  tool    │  │     END      │
-          │  query   │  │  node    │  │ (memory write│
-          └────┬─────┘  └────┬─────┘  │  happens in  │
-               │              │       │  background) │
-               └──────┬───────┘       └──────────────┘
-                      │
-                      ▼
-                ┌──────────┐
-                │ observe  │
-                │  node    │
-                └────┬─────┘
-                     │
-                     ▼
-                ┌──────────┐
-                │  think   │
-                │  (loop)  │
-                └──────────┘
+        ┌────────────┼────────────────┐
+        │            │                │
+    interrupt   memory_query    pending_tool  goal_status
+    needed?       calls?         == "complete"
+         │              │                │
+         ▼              ▼                ▼
+  ┌──────────┐  ┌──────────┐  ┌──────────────┐
+  │ interrupt│  │ memory   │  │     END      │
+  │  node    │  │  query   │  │ (memory write│
+  │          │  │          │  │  in background)│
+  └─────┬────┘  └────┬─────┘  └──────────────┘
+        │             │
+        ▼             ▼
+      END          think (loop)
+
+Interrupt path:
+    think → interrupt → think (loop)
+    The interrupt node calls langgraph.types.interrupt() to pause the
+    graph. The clarification question is surfaced to the caller via
+    __interrupt__ in the stream. When the user responds, the caller
+    resumes with Command(resume=<answer>) using the same thread_id.
+    The interrupt() call returns the answer, it is stored in
+    clarification_history, and the graph loops back to think.
 
 Max loops: 3 (hard ceiling to respect LLM rate limits).
-
-Memory writing is NOT a graph node. It runs as a background task in the
-route handler after the SSE stream completes, so it never blocks the
-response or causes InvalidUpdateError.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ from app.agent.nodes.observe_node import observe_node
 from app.agent.nodes.memory_query import memory_query_node
 from app.agent.nodes.grader_node import grader_node
 from app.agent.nodes.intent_node import intent_node
+from app.agent.nodes.interrupt_node import interrupt_node
 
 
 # ---------------------------------------------------------------------------
@@ -84,12 +86,17 @@ def _route_after_think(state: VyaparAgentState) -> str:
     """
     Conditional edge function called after think_node.
 
-    Priority:
-        1. If memory_query_needed → go to memory_query node
-        2. If pending_tool_calls → go to tool node
-        3. If goal complete → END (memory write happens in background)
-        4. Otherwise → END
+    Priority (highest to lowest):
+        1. If needs_clarification → go to interrupt node
+        2. If memory_query_needed → go to memory_query node
+        3. If pending_tool_calls → go to tool node
+        4. If goal complete → END (memory write happens in background)
+        5. Otherwise → END
     """
+    # Clarification takes highest priority — the agent is uncertain
+    if state.get("needs_clarification", False):
+        return "interrupt"
+
     # Memory query requested by the think node
     if state.get("memory_query_needed", False):
         return "memory_query"
@@ -131,6 +138,7 @@ def build_graph(checkpointer=None):
 
     workflow.add_node("grader", grader_node)
     workflow.add_node("intent", intent_node)
+    workflow.add_node("interrupt", interrupt_node)
     workflow.add_node("think", think_node)
     workflow.add_node("memory_query", memory_query_node)
     workflow.add_node("tool", tool_node)
@@ -161,17 +169,28 @@ def build_graph(checkpointer=None):
 
     # --------------------------------------------------------------
     # Conditional edges from think
+    # interrupt has highest priority (checked in router)
     # --------------------------------------------------------------
 
     workflow.add_conditional_edges(
         "think",
         _route_after_think,
         {
+            "interrupt": "interrupt",
             "memory_query": "memory_query",
             "tool": "tool",
             "__end__": END,
         },
     )
+
+    # --------------------------------------------------------------
+    # interrupt → think (graph pauses at interrupt() inside the node;
+    # when resumed via Command(resume=...), the interrupt node stores
+    # the user's answer in clarification_history and the graph loops
+    # back to think so the LLM can incorporate the answer and continue)
+    # --------------------------------------------------------------
+
+    workflow.add_edge("interrupt", "think")
 
     # --------------------------------------------------------------
     # memory_query → think (loop back to synthesize memory)

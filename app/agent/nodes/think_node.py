@@ -153,6 +153,36 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     if available and not is_final_loop:
         sys_content += build_available_tools(available)
 
+        # Instruct the LLM about the ask_for_clarification tool
+        # — when to use it and why it exists.
+        if "ask_for_clarification" in available:
+            sys_content += (
+                "IMPORTANT — You have a special tool available called "
+                "`ask_for_clarification`. Use this tool when you are "
+                "uncertain about what the user wants, when the question "
+                "is too vague to answer with available tools, when you "
+                "need specific information the user hasn't provided, or "
+                "when you cannot answer confidently. Call it with a "
+                "`reason` explaining why you need clarification. Do NOT "
+                "try to guess or give a vague answer — ask the user "
+                "instead.\n\n"
+            )
+
+    # Inject clarification history if present — tells the LLM
+    # that a previous clarification was answered so it can
+    # incorporate that context into its reasoning.
+    clarification_history = state.get("clarification_history", [])
+    if clarification_history:
+        sys_content += "\n\n--- Previous Clarifications ---\n"
+        for entry in clarification_history[-3:]:
+            question = entry.get("question", "")
+            answer = entry.get("answer", "")
+            sys_content += (
+                f"User was asked: \"{question}\"\n"
+                f"User answered: \"{answer}\"\n\n"
+            )
+        sys_content += "---\n\n"
+
     raw_messages = [
         message
         for message in state.get("messages", [])
@@ -201,6 +231,28 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         ]
         tool_names = [c["tool_name"] for c in pending_calls]
 
+        # If the LLM wants to ask for clarification, route directly
+        # to the interrupt node instead of executing a tool call.
+        if any(c["tool_name"] == "ask_for_clarification" for c in pending_calls):
+            reason = ""
+            for c in pending_calls:
+                if c["tool_name"] == "ask_for_clarification":
+                    reason = c["arguments"].get("reason", "")
+                    break
+            LOGGER.info(
+                "think_node_clarification_tool_called",
+                loop=loop,
+                tools_requested=tool_names,
+                reason=reason[:200] if reason else None,
+            )
+            return {
+                "needs_clarification": True,
+                "clarification_prompt": reason,
+                "goal_status": "in_progress",
+                "goal": current_goal,
+                "messages": [response],
+            }
+
         LOGGER.info(
             "think_node_decided_tools",
             loop=loop,
@@ -223,7 +275,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         )
         final_text = response.content if hasattr(response, "content") else str(response)
         tools_used = list({r["tool_name"] for r in state.get("tool_results", [])})
-        
+
         # Determine if this conversation is worth persisting to mem0.
         # Skip trivial exchanges ("hi", "hello", "ok", etc.) to avoid
         # polluting long-term memory with noise.
@@ -233,7 +285,41 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             tools_used=tools_used,
             loop_count=loop,
         )
-        
+
+        # Check if clarification is needed before completing.
+        # This happens when:
+        #   - Final loop reached with no tools called (LLM uncertain)
+        #   - Goal status is "failed" (max loops exceeded)
+        #   - Agent tried tools but got no useful results
+        clarification_decision = _should_ask_clarification(
+            loop=loop,
+            max_loops=state.get("max_loops", 3),
+            tools_used=tools_used,
+            tool_results=state.get("tool_results", []),
+            goal_status=goal_status,
+        )
+
+        if clarification_decision["needs_clarification"]:
+            LOGGER.info(
+                "think_node_clarification_needed",
+                loop=loop,
+                reason=clarification_decision["reason"],
+            )
+            # Use the decision's question if available; fall back to the
+            # reason so the interrupt node has a concrete prompt to use
+            # as the interrupt payload (avoids an extra LLM call that would
+            # also re-run on resume).
+            prompt = clarification_decision.get("question") or clarification_decision.get("reason", "")
+            return {
+                "needs_clarification": True,
+                "clarification_prompt": prompt,
+                "goal_status": "in_progress",
+                "goal": current_goal,
+                "messages": [response],
+                "final_answer": final_text,
+                "should_persist_memory": should_persist,
+            }
+
         return {
             "goal_status": "complete",
             "goal": current_goal,
@@ -318,6 +404,66 @@ def _is_conversation_meaningful(
         return False
 
     return True
+
+
+def _should_ask_clarification(
+    *,
+    loop: int,
+    max_loops: int,
+    tools_used: list[str],
+    tool_results: list[dict],
+    goal_status: str,
+) -> dict:
+    """
+    Determine whether the agent should ask the user for clarification.
+
+    Returns a dict:
+        {
+            "needs_clarification": bool,
+            "reason": str,
+            "question": str | None,
+        }
+
+    Triggers when:
+        - Final loop reached with no useful tools called (LLM stuck)
+        - Goal status is "failed" (max loops exceeded)
+        - All tool calls failed
+    """
+    failed_results = [
+        r for r in tool_results if not r.get("success", False)
+    ]
+    all_failed = (
+        bool(tool_results) and len(failed_results) == len(tool_results)
+    )
+
+    if goal_status == "failed":
+        return {
+            "needs_clarification": True,
+            "reason": "max loops exceeded without completing the goal",
+            "question": None,
+        }
+
+    if loop >= max_loops and not tools_used:
+        return {
+            "needs_clarification": True,
+            "reason": "reached loop ceiling without calling any tools — "
+            "query may be ambiguous or out of scope",
+            "question": None,
+        }
+
+    if all_failed:
+        return {
+            "needs_clarification": True,
+            "reason": "all tool calls failed — may need user guidance "
+            "to resolve the issue",
+            "question": None,
+        }
+
+    return {
+        "needs_clarification": False,
+        "reason": "",
+        "question": None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,27 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         state.get("messages", []),
         state.get("user_prompt", ""),
     ).strip()
+
+    # When resuming after a clarification, the intent was
+    # already determined — reuse it directly.
+    if state.get("resume_from_clarification", False):
+        existing_intent = state.get("intent", "general") or "general"
+        existing_reason = state.get("intent_reason", "") or "resumed from clarification"
+        LOGGER.info(
+            "intent_node_resume_skip",
+            intent=existing_intent,
+            reason=existing_reason,
+        )
+        needs_memory = existing_intent in {"memory", "mixed"}
+        return {
+            "user_prompt": prompt,
+            "intent": existing_intent,
+            "intent_reason": existing_reason,
+            "memory_query_needed": needs_memory,
+            "user_memory_loaded": not needs_memory,
+            "store_memory_loaded": not needs_memory,
+        }
+
     deterministic = _deterministic_intent(prompt)
     reason = "deterministic routing"
     intent = deterministic

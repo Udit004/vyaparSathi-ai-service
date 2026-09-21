@@ -3,17 +3,12 @@ app/agent/service/__init__.py
 ==============================
 Agent data services — real MongoDB queries used exclusively by the agent tools.
 
-Each module owns one domain (inventory, sales, forecast, insights) so
-the codebase stays modular, readable, and independently testable.
+The canonical implementations live under domain subfolders:
 
-Layout:
-
-    app/agent/service/
-    ├── __init__.py
-    ├── inventory.py    # fetch_inventory_summary, fetch_low_stock_products
-    ├── sales.py        # fetch_sales_summary, fetch_top_selling_products
-    ├── forecast.py     # fetch_restock_priorities, fetch_forecast_summary
-    └── insights.py     # fetch_store_insights
+- inventory/
+- sales/
+- forecast/
+- insights/
 """
 
 from app.agent.service.inventory import fetch_inventory_summary, fetch_low_stock_products
