@@ -85,6 +85,10 @@ This document is written so another AI system can understand the project deeply 
 
 - `app/agent/nodes/intent_node.py`
   - Classifies intent: live_data, memory, recap, mixed, general
+  - Determines if the request is complex and needs planning
+
+- `app/agent/nodes/planner_node.py`
+  - Generates a structured execution plan for complex requests without executing tools
 
 - `app/agent/nodes/think_node.py`
   - Main reasoning node
@@ -152,7 +156,7 @@ The graph is built in `app/agent/graph.py` using `StateGraph(VyaparAgentState)`.
 
 The standard flow is:
 
-`grader -> intent -> think -> (interrupt OR memory_query OR tool) -> observe -> think ...`
+`grader -> intent -> [planner if complex] -> think -> (interrupt OR memory_query OR tool) -> observe -> think ...`
 
 ### Routing logic
 
@@ -161,6 +165,10 @@ In `graph.py`:
 - after `grader`, route is either:
   - `END` if denied
   - `intent` if safe
+
+- after `intent`, route is:
+  - `planner` if the request is complex (`requires_planning=True`)
+  - `think` if the request is simple
 
 - after `think`, route priority is:
   1. `interrupt` if `needs_clarification` is true
@@ -201,8 +209,11 @@ These define which user, which store, and which logical chat session the agent i
 - `goal_status`
 - `loop_count`
 - `max_loops`
+- `requires_planning`
+- `plan`
 
 The agent loop is bounded to prevent infinite loops. Default `max_loops` is 3.
+The `plan` stores a structured execution strategy for complex goals.
 
 #### Message history
 
@@ -281,10 +292,28 @@ Possible intents:
 - `general`
 
 The node sets `memory_query_needed` for memory-based or mixed requests.
+It also sets `requires_planning` to `True` for complex intents (e.g. "recommend strategy", "which products should I restock").
 
-This is important because the agent does not always need memory. It only pulls memory when relevant.
+This is important because the agent does not always need memory or a plan. It only uses them when relevant.
 
-### 6.3 `think_node`
+### 6.3 `planner_node`
+
+This node is used for complex requests to generate a step-by-step strategy.
+
+Responsibilities:
+
+- read the user prompt
+- build a 2 to 6 step plan mapping to available tools
+- format the output as JSON containing `goal` and `steps`
+- save the output to `state["plan"]`
+
+Important behavior:
+
+- it does NOT execute tools itself
+- it acts as a strategizer to guide the `think_node` through a multi-step process
+- it only runs once per request when routed from `intent`
+
+### 6.4 `think_node`
 
 This is the main decision-making node.
 
@@ -306,11 +335,12 @@ It:
 
 Important logic:
 
+- It uses the `plan` from the `planner_node` (if present) to sequence its tool calls effectively.
 - If `loop_count >= max_loops`, it forces a direct-to-answer path instead of more tools.
 - If the model wants `ask_for_clarification`, it does not execute a tool; it triggers the interrupt route instead.
 - It tries to preserve conversation continuity while avoiding context bloat.
 
-### 6.4 `memory_query_node`
+### 6.5 `memory_query_node`
 
 This node loads persisted memory from mem0 when the request needs context from previous conversations or user preferences.
 
@@ -325,7 +355,7 @@ It sets:
 - `store_memory_loaded = True`
 - `memory_query_needed = False`
 
-### 6.5 `tool_node`
+### 6.6 `tool_node`
 
 This node executes any tool calls the LLM requested.
 
@@ -345,7 +375,7 @@ Examples:
 - forecast tools -> `forecast_context`
 - insights tool -> `insights_context`
 
-### 6.6 `observe_node`
+### 6.7 `observe_node`
 
 The observe node transforms raw tool results into `ToolMessage` objects that the LLM can reason over.
 
@@ -357,7 +387,7 @@ Important behavior:
 
 This is crucial for controlling token usage and preserving context quality.
 
-### 6.7 `interrupt_node`
+### 6.8 `interrupt_node`
 
 This node is used when the agent is uncertain and needs clarification before continuing.
 

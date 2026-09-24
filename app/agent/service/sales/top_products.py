@@ -2,12 +2,37 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from bson import ObjectId
+from bson.errors import InvalidId
 import structlog
 from app.config.database import get_database
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.service.sales.top_products")
 
 DEFAULT_LOOKBACK_DAYS = 30
+
+
+async def _resolve_store_id(db, store_id: str) -> ObjectId | None:
+    """
+    Resolve a store identifier to an ObjectId.
+
+    Accepts either a valid 24-char hex ObjectId string or a store name.
+    Returns None if not found.
+    """
+    try:
+        return ObjectId(store_id)
+    except (InvalidId, TypeError):
+        pass
+
+    doc = await db["stores"].find_one(
+        {"name": store_id},
+        {"_id": 1},
+    )
+    if doc:
+        return doc["_id"]
+
+    LOGGER.warning("top_products_store_not_found", store_id=store_id)
+    return None
+
 
 async def fetch_top_selling_products(
     store_id: str, limit: int = 5, days_lookback: int = DEFAULT_LOOKBACK_DAYS
@@ -17,12 +42,15 @@ async def fetch_top_selling_products(
     Each item: { product_id, name, total_quantity_sold, revenue_generated }
     """
     db = get_database()
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        return []
     cutoff = datetime.utcnow() - timedelta(days=days_lookback)
 
     pipeline = [
         {
             "$match": {
-                "store": ObjectId(store_id),
+                "store": store_oid,
                 "completedAt": {"$gte": cutoff},
             }
         },

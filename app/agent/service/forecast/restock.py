@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from bson import ObjectId
+from bson.errors import InvalidId
 import structlog
 from app.config.database import get_database
 
@@ -19,6 +20,29 @@ MAX_SALES_RESULTS = 5000
 MAX_PRODUCTS = 2000
 
 
+async def _resolve_store_id(db, store_id: str) -> ObjectId | None:
+    """
+    Resolve a store identifier to an ObjectId.
+
+    Accepts either a valid 24-char hex ObjectId string or a store name.
+    Returns None if not found.
+    """
+    try:
+        return ObjectId(store_id)
+    except (InvalidId, TypeError):
+        pass
+
+    doc = await db["stores"].find_one(
+        {"name": store_id},
+        {"_id": 1},
+    )
+    if doc:
+        return doc["_id"]
+
+    LOGGER.warning("restock_store_not_found", store_id=store_id)
+    return None
+
+
 async def fetch_restock_priorities(store_id: str) -> list[dict]:
     """
     Computes restock priority per product using actual stock + real avg daily sales.
@@ -29,13 +53,16 @@ async def fetch_restock_priorities(store_id: str) -> list[dict]:
         GREEN  — healthy stock
     """
     db = get_database()
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        return []
     cutoff = datetime.utcnow() - timedelta(days=SALES_LOOKBACK_DAYS)
 
     # 1. Avg daily sales per product over last 30 days
     sales_pipeline = [
         {
             "$match": {
-                "store": ObjectId(store_id),
+                "store": store_oid,
                 "completedAt": {"$gte": cutoff},
             }
         },
@@ -55,7 +82,7 @@ async def fetch_restock_priorities(store_id: str) -> list[dict]:
 
     # 2. All active products
     prod_cursor = db["products"].find(
-        {"store": ObjectId(store_id), "isActive": True},
+        {"store": store_oid, "isActive": True},
         {"_id": 1, "name": 1, "quantity": 1, "price": 1},
     )
     products = await prod_cursor.to_list(length=MAX_PRODUCTS)

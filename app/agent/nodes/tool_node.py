@@ -99,6 +99,23 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
                     ctx.append(raw_data)
                 updates["insights_context"] = ctx
 
+            # Extract candidates if this looks like a discovery tool
+            if isinstance(raw_data, dict) and "items" in raw_data and isinstance(raw_data["items"], list):
+                # Only add if it looks like a list of products
+                if len(raw_data["items"]) > 0 and "product_id" in raw_data["items"][0]:
+                    candidates = list(state.get("candidate_products", []))
+                    candidates.extend(raw_data["items"])
+                    updates["candidate_products"] = candidates
+                    
+                    # Update metrics
+                    metrics = dict(state.get("discovery_metrics", {}))
+                    metrics[tool_name] = {
+                        "candidates_found": len(raw_data["items"]),
+                        "count": raw_data.get("count", len(raw_data["items"]))
+                    }
+                    updates["discovery_metrics"] = metrics
+
+
         except Exception as exc:
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
             LOGGER.error(

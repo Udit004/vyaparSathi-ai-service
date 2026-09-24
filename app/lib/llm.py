@@ -9,12 +9,11 @@ fallback chain that transparently tries the next provider when the
 current one is exhausted.
 
 Fallback order:
-    1. gemini-2.5-flash        (primary reasoning — full Gemini quota used here)
-    2. gemini-2.5-flash-lite   (same provider, cheaper/faster)
-    3. nvidia/llama-3.1-8b-instruct (OpenAI-compatible)
-    4. gpt-oss-20b             (OpenAI-compatible, GROQ)
-    5. openai/gpt-oss-120b     (OpenAI-compatible, GROQ)
-    6. openai/gpt-oss-safeguard-20b (OpenAI-compatible, GROQ, dedicated safeguard)
+    1. gemini-2.5-flash          (primary reasoning — best quality)
+    2. openai/gpt-oss-120b       (GROQ — large, high-capability reasoning model)
+    3. openai/gpt-oss-20b        (GROQ — lightweight fallback, requires openai/ prefix)
+    4. gemini-2.5-flash-lite     (Gemini cheap fallback, rate-limited)
+    5. nvidia/llama-3.1-8b-instruct (NVIDIA — fast, cheap fallback)
 
 The returned object behaves like a single chat model: ``ainvoke`` and
 ``bind_tools`` both work, and tool calls are propagated to every member
@@ -98,22 +97,20 @@ _OPENAI_BASE_URL = {
 # Each entry: (provider_name, model_id, build_fn, api_key_env)
 # The order here IS the fallback order.
 # Strategy:
-#   1. gemini-2.5-flash      — primary reasoning model (best quality)
-#   2. openai/gpt-oss-120b  — Groq fallback (high rate limits, fast, free tier)
-#   3. nvidia/llama-3.1-8b-instruct — NVIDIA fallback (fast, cheap)
-#   4. gpt-oss-20b           — Groq lightweight fallback
-#   5. gemini-2.5-flash-lite  — last resort (rate-limited, 20/day free tier)
-#   6. openai/gpt-oss-safeguard-20b — safety classifier (not used by think node)
-# OpenAI-compatible members (NVIDIA + GROQ) keep Gemini quota reserved
-# for when the other providers are unavailable. The guarder node uses
-# the dedicated openai/gpt-oss-safeguard-20b model.
+#   1. gemini-2.5-flash          — primary reasoning model (best quality)
+#   2. openai/gpt-oss-120b       — Groq large/powerful reasoning fallback (free tier, high rate limit)
+#   3. openai/gpt-oss-20b        — Groq lightweight fallback (MUST include openai/ prefix for Groq routing)
+#   4. gemini-2.5-flash-lite      — last resort (rate-limited, 20/day free tier)
+#   5. nvidia/llama-3.1-8b-instruct — NVIDIA fallback (fast, cheap)
+# NOTE: All Groq model IDs must include the "openai/" prefix when using the
+# Groq OpenAI-compatible endpoint — without it, ChatOpenAI routes to OpenAI's
+# servers and returns 404 (model not found).
 _PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI_API_KEY"),
     ("groq120b", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
-    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA_API_KEY"),
-    ("groq", "gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
+    ("groq20b", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
     ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI_API_KEY"),
-    ("groqGuard", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
+    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA_API_KEY"),
 ]
 
 

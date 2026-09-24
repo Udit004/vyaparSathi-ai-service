@@ -94,19 +94,14 @@ def _available_provider() -> str | None:
 def _create_kwargs(provider: str, model: str, *, max_tokens: int) -> dict[str, Any]:
     """
     Build the kwargs for ``client.chat.completions.create``.
-
-    ``openai/gpt-oss-20b`` is a reasoning model on GROQ. Passing
-    ``reasoning_effort="low"`` keeps it fast for this compression task and
-    avoids burning the budget on hidden reasoning tokens — the same choice
-    made by the grader client in ``app/lib/grader.py``.
     """
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "temperature": 0.1,
     }
-    if provider == "groq":
-        kwargs["reasoning_effort"] = "low"
+    # NOTE: openai/gpt-oss-20b does not universally support reasoning_effort
+    # and passing it causes a 404 page not found error on Groq's OpenAI compat endpoint.
     return kwargs
 
 

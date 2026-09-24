@@ -6,6 +6,10 @@ from app.agent.tools.inventory.low_stock import get_low_stock_products
 from app.agent.tools.inventory.stock_history import get_stock_history
 from app.agent.tools.inventory.dead_stock import get_dead_stock
 from app.agent.tools.inventory.inventory_risk import get_inventory_risk
+from app.agent.tools.inventory.expiry_alerts import get_expiry_alerts
+from app.agent.tools.inventory.category_stock_health import get_category_stock_health
+from app.agent.tools.inventory.slow_moving import get_slow_moving_products
+from app.agent.tools.inventory.stockout_risk import get_stockout_risk_products
 
 # Sales
 from app.agent.tools.sales.summary import get_sales_summary
@@ -13,6 +17,10 @@ from app.agent.tools.sales.top_products import get_top_selling_products
 from app.agent.tools.sales.product_performance import get_product_performance
 from app.agent.tools.sales.category_performance import get_category_performance
 from app.agent.tools.sales.sales_anomalies import get_sales_anomalies
+from app.agent.tools.sales.daily_trend import get_daily_sales_trend
+from app.agent.tools.sales.discount_impact import get_discount_impact
+from app.agent.tools.sales.profit_margin import get_profit_margin_analysis
+from app.agent.tools.sales.fast_moving import get_fast_moving_products
 
 # Forecast
 from app.agent.tools.forecast.demand import get_demand_forecast
@@ -36,6 +44,11 @@ from app.agent.tools.suppliers.search import search_suppliers
 from app.agent.tools.suppliers.performance import get_supplier_performance
 from app.agent.tools.suppliers.pricing import get_supplier_pricing
 
+# Subgraphs
+from app.agent.tools.subgraphs.invoke_briefing import invoke_morning_briefing
+from app.agent.tools.subgraphs.invoke_inventory_audit import invoke_deep_inventory_audit
+from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_order
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
@@ -46,6 +59,10 @@ VYAPAR_TOOLS = [
     get_stock_history,
     get_dead_stock,
     get_inventory_risk,
+    get_expiry_alerts,
+    get_category_stock_health,
+    get_slow_moving_products,
+    get_stockout_risk_products,
     
     # Sales
     get_sales_summary,
@@ -53,6 +70,10 @@ VYAPAR_TOOLS = [
     get_product_performance,
     get_category_performance,
     get_sales_anomalies,
+    get_daily_sales_trend,
+    get_discount_impact,
+    get_profit_margin_analysis,
+    get_fast_moving_products,
     
     # Forecast
     get_demand_forecast,
@@ -75,6 +96,11 @@ VYAPAR_TOOLS = [
     search_suppliers,
     get_supplier_performance,
     get_supplier_pricing,
+    
+    # Subgraphs
+    invoke_morning_briefing,
+    invoke_deep_inventory_audit,
+    invoke_smart_restock_order,
 ]
 
 def get_tool_by_name(name: str):

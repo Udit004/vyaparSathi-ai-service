@@ -203,6 +203,20 @@ async def _stream_graph_events(
             elif kind == "on_chain_end" and name == "memory_query":
                 yield f"event: token\ndata: {json.dumps({'text': '\n_[Memory loaded.]_\n'})}\n\n"
 
+            # --- Subgraph events ---
+            elif kind == "on_chain_start" and name in {"morning_briefing", "deep_inventory", "smart_restock"}:
+                yield f"event: subgraph_start\ndata: {json.dumps({'name': name})}\n\n"
+            
+            elif kind == "on_chain_start" and name in {
+                "fetch_kpis", "fetch_alerts", "synthesize", 
+                "fetch_overview", "fetch_risks", "fetch_restock", 
+                "fetch_priorities", "fetch_supplier_context", "build_order"
+            }:
+                yield f"event: subgraph_step\ndata: {json.dumps({'name': name})}\n\n"
+                
+            elif kind == "on_chain_end" and name in {"morning_briefing", "deep_inventory", "smart_restock"}:
+                yield f"event: subgraph_end\ndata: {json.dumps({'name': name})}\n\n"
+
         # --- Post-stream: populate result dict ---
         result["full_response"] = "".join(
             _flatten_text(p) for p in assistant_text_parts

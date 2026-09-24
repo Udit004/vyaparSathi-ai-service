@@ -8,6 +8,7 @@ from app.agent.service import fetch_low_stock_products
 class LowStockInput(BaseModel):
     store_id: str = Field(..., description="The ID of the store.")
     threshold: int = Field(10, description="The quantity threshold below which a product is considered low stock.")
+    limit: int = Field(50, description="Maximum number of products to return.")
 
 class LowStockItem(BaseModel):
     product_id: str
@@ -22,12 +23,12 @@ class LowStockOutput(BaseModel):
     fetched_at: str
 
 @tool("get_low_stock_products", args_schema=LowStockInput)
-async def get_low_stock_products(store_id: str, threshold: int = 10) -> LowStockOutput:
+async def get_low_stock_products(store_id: str, threshold: int = 10, limit: int = 50) -> LowStockOutput:
     """
     Get a list of specific products that are running low on stock (below the given threshold).
     Useful for identifying exactly what needs to be ordered.
     """
-    items = await fetch_low_stock_products(store_id, threshold)
+    items = await fetch_low_stock_products(store_id, threshold, limit)
     return LowStockOutput(
         items=[LowStockItem(**i) for i in items],
         count=len(items),

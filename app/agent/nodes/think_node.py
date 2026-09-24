@@ -119,6 +119,8 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         current_goal=current_goal,
         loop=loop,
         max_loops=max_loops,
+        user_context=state.get("user_context", {}),
+        store_context=state.get("store_context", {}),
     )
 
     # Inject memory context if available
@@ -138,6 +140,16 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         # inventory, sales, forecasts, restock, or insights MUST call the
         # relevant tools — memory may be stale and will not have current numbers.
         sys_content += MEMORY_WARNING
+
+    plan = state.get("plan")
+    if plan and isinstance(plan, dict):
+        sys_content += "\nExecution Plan:\n"
+        if "goal" in plan:
+            sys_content += f"Goal: {plan['goal']}\n"
+        if "steps" in plan:
+            for idx, step in enumerate(plan["steps"]):
+                sys_content += f"{idx + 1}. {step}\n"
+        sys_content += "Follow this plan using the available tools.\n\n"
 
     if results_so_far:
         sys_content += build_tool_synthesis(

@@ -31,6 +31,17 @@ _RECAP_TERMS = (
 )
 
 
+_COMPLEX_TERMS = (
+    "recommend", "strategy", "plan", "which products should",
+    "what should i", "how should i", "next week", "budget",
+    "best products", "analyze", "prioritize"
+)
+
+def _requires_planning(prompt: str) -> bool:
+    lowered = (prompt or "").lower()
+    return any(term in lowered for term in _COMPLEX_TERMS)
+
+
 def _deterministic_intent(prompt: str) -> str | None:
     lowered = (prompt or "").lower()
     has_live = any(term in lowered for term in _LIVE_TERMS)
@@ -53,6 +64,8 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         state.get("messages", []),
         state.get("user_prompt", ""),
     ).strip()
+    
+    requires_planning = _requires_planning(prompt)
 
     # When resuming after a clarification, the intent was
     # already determined — reuse it directly.
@@ -72,6 +85,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
             "memory_query_needed": needs_memory,
             "user_memory_loaded": not needs_memory,
             "store_memory_loaded": not needs_memory,
+            "requires_planning": requires_planning,
         }
 
     deterministic = _deterministic_intent(prompt)
@@ -98,6 +112,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         reason=reason,
         needs_memory=needs_memory,
         prompt_len=len(prompt),
+        requires_planning=requires_planning,
     )
     return {
         "user_prompt": prompt,
@@ -106,4 +121,5 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         "memory_query_needed": needs_memory,
         "user_memory_loaded": not needs_memory,
         "store_memory_loaded": not needs_memory,
+        "requires_planning": requires_planning,
     }

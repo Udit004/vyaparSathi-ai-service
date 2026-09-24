@@ -1,25 +1,56 @@
 from datetime import datetime, timedelta
 from bson import ObjectId
+from bson.errors import InvalidId
 from app.config.database import get_database
 from app.schemas.forecast import ForecastRequest, ForecastSeriesInput, DailyValue
 from app.services.forecast_service import generate_forecast_response
 from app.schemas.analytics import InsightResult
 import logging
 
+
+async def _resolve_store_id(db, store_id: str) -> ObjectId | None:
+    """
+    Resolve a store identifier to an ObjectId.
+
+    Accepts either a valid 24-char hex ObjectId string or a store name.
+    Returns None if not found.
+    """
+    try:
+        return ObjectId(store_id)
+    except (InvalidId, TypeError):
+        pass
+
+    doc = await db["stores"].find_one(
+        {"name": store_id},
+        {"_id": 1},
+    )
+    if doc:
+        return doc["_id"]
+
+    return None
+
+
 async def get_store_products(store_id: str):
     db = get_database()
-    cursor = db["products"].find({"store": ObjectId(store_id), "isActive": True})
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        return []
+    cursor = db["products"].find({"store": store_oid, "isActive": True})
     products = await cursor.to_list(length=1000)
     for p in products:
         p["_id"] = str(p["_id"])
         p["store"] = str(p.get("store"))
     return products
 
+
 async def get_store_sales(store_id: str, days: int = 30):
     db = get_database()
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        return []
     cutoff_date = datetime.utcnow() - timedelta(days=days)
     cursor = db["sales"].find({
-        "store": ObjectId(store_id),
+        "store": store_oid,
         "completedAt": {"$gte": cutoff_date}
     })
     sales = await cursor.to_list(length=5000)

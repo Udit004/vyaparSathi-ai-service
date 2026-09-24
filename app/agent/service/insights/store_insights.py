@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from bson import ObjectId
+from bson.errors import InvalidId
 import structlog
 from app.config.database import get_database
 
@@ -17,6 +18,30 @@ MAX_DEAD_STOCK_LIST = 2000
 MAX_SOLD_IDS = 5000
 MAX_LEADERS = 3
 
+
+async def _resolve_store_id(db, store_id: str) -> ObjectId | None:
+    """
+    Resolve a store identifier to an ObjectId.
+
+    Accepts either a valid 24-char hex ObjectId string or a store name.
+    Returns None if not found.
+    """
+    try:
+        return ObjectId(store_id)
+    except (InvalidId, TypeError):
+        pass
+
+    doc = await db["stores"].find_one(
+        {"name": store_id},
+        {"_id": 1},
+    )
+    if doc:
+        return doc["_id"]
+
+    LOGGER.warning("store_insights_store_not_found", store_id=store_id)
+    return None
+
+
 async def fetch_store_insights(store_id: str) -> list[dict]:
     """
     Generates structured insights from real data:
@@ -28,9 +53,13 @@ async def fetch_store_insights(store_id: str) -> list[dict]:
     db = get_database()
     insights = []
 
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        return insights
+
     # --- Out of stock ---
     oos_cursor = db["products"].find(
-        {"store": ObjectId(store_id), "isActive": True, "quantity": {"$lte": 0}},
+        {"store": store_oid, "isActive": True, "quantity": {"$lte": 0}},
         {"_id": 1, "name": 1},
     ).limit(MAX_OOS_LIST)
     oos = await oos_cursor.to_list(length=MAX_OOS_LIST)
@@ -53,7 +82,7 @@ async def fetch_store_insights(store_id: str) -> list[dict]:
     # --- Dead stock (no sales in 60 days, qty > 0) ---
     dead_cutoff = datetime.utcnow() - timedelta(days=DEAD_STOCK_DAYS)
     sold_pipeline = [
-        {"$match": {"store": ObjectId(store_id), "completedAt": {"$gte": dead_cutoff}}},
+        {"$match": {"store": store_oid, "completedAt": {"$gte": dead_cutoff}}},
         {"$unwind": "$items"},
         {"$group": {"_id": "$items.productId"}},
     ]
@@ -61,7 +90,7 @@ async def fetch_store_insights(store_id: str) -> list[dict]:
     sold_ids = {r["_id"] for r in await sold_cursor.to_list(length=MAX_SOLD_IDS)}
 
     all_products = await db["products"].find(
-        {"store": ObjectId(store_id), "isActive": True, "quantity": {"$gt": 0}},
+        {"store": store_oid, "isActive": True, "quantity": {"$gt": 0}},
         {"_id": 1, "name": 1, "quantity": 1, "price": 1},
     ).to_list(length=MAX_DEAD_STOCK_LIST)
 
@@ -93,7 +122,7 @@ async def fetch_store_insights(store_id: str) -> list[dict]:
     top_pipeline = [
         {
             "$match": {
-                "store": ObjectId(store_id),
+                "store": store_oid,
                 "completedAt": {"$gte": datetime.utcnow() - timedelta(days=REVENUE_LEAD_DAYS)},
             }
         },

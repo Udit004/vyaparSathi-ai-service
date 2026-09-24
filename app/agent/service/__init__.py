@@ -19,6 +19,10 @@ from app.agent.service.inventory.low_stock import fetch_low_stock_products
 from app.agent.service.inventory.stock_history import fetch_stock_history
 from app.agent.service.inventory.dead_stock import fetch_dead_stock
 from app.agent.service.inventory.inventory_risk import fetch_inventory_risk
+from app.agent.service.inventory.expiry_alerts import fetch_expiry_alerts
+from app.agent.service.inventory.category_stock_health import fetch_category_stock_health
+from app.agent.service.inventory.slow_moving import fetch_slow_moving_products
+from app.agent.service.inventory.stockout_risk import fetch_stockout_risk_products
 
 # Sales
 from app.agent.service.sales.summary import fetch_sales_summary
@@ -26,6 +30,10 @@ from app.agent.service.sales.top_products import fetch_top_selling_products
 from app.agent.service.sales.product_performance import fetch_product_performance
 from app.agent.service.sales.category_performance import fetch_category_performance
 from app.agent.service.sales.sales_anomalies import fetch_sales_anomalies
+from app.agent.service.sales.daily_trend import fetch_daily_sales_trend
+from app.agent.service.sales.discount_impact import fetch_discount_impact
+from app.agent.service.sales.profit_margin import fetch_profit_margin_analysis
+from app.agent.service.sales.fast_moving import fetch_fast_moving_products
 
 # Forecast
 from app.agent.service.forecast.demand import fetch_demand
@@ -56,6 +64,10 @@ __all__ = [
     "fetch_stock_history",
     "fetch_dead_stock",
     "fetch_inventory_risk",
+    "fetch_expiry_alerts",
+    "fetch_category_stock_health",
+    "fetch_slow_moving_products",
+    "fetch_stockout_risk_products",
     
     # Sales
     "fetch_sales_summary",
@@ -63,6 +75,10 @@ __all__ = [
     "fetch_product_performance",
     "fetch_category_performance",
     "fetch_sales_anomalies",
+    "fetch_daily_sales_trend",
+    "fetch_discount_impact",
+    "fetch_profit_margin_analysis",
+    "fetch_fast_moving_products",
     
     # Forecast
     "fetch_demand",

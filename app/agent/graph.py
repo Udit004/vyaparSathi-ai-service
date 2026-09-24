@@ -62,11 +62,26 @@ from app.agent.nodes.memory_query import memory_query_node
 from app.agent.nodes.grader_node import grader_node
 from app.agent.nodes.intent_node import intent_node
 from app.agent.nodes.interrupt_node import interrupt_node
+from app.agent.nodes.context_node import context_node
+from app.agent.nodes.subgraph_router import subgraph_router
+from app.agent.nodes.planner_node import planner_node
 
 
 # ---------------------------------------------------------------------------
 # Router functions
 # ---------------------------------------------------------------------------
+
+def _route_after_intent(state: VyaparAgentState) -> str:
+    """
+    Conditional edge function called after intent_node.
+
+    Routes to the planner if the intent node identified the request as
+    complex and needing planning (requires_planning is True).
+    Otherwise goes straight to the think node.
+    """
+    if state.get("requires_planning", False) and not state.get("plan"):
+        return "planner"
+    return "think"
 
 def _route_after_grader(state: VyaparAgentState) -> str:
     """
@@ -136,19 +151,27 @@ def build_graph(checkpointer=None):
     # Register nodes
     # --------------------------------------------------------------
 
+    workflow.add_node("context", context_node)
     workflow.add_node("grader", grader_node)
     workflow.add_node("intent", intent_node)
+    workflow.add_node("planner", planner_node)
     workflow.add_node("interrupt", interrupt_node)
     workflow.add_node("think", think_node)
     workflow.add_node("memory_query", memory_query_node)
     workflow.add_node("tool", tool_node)
+    workflow.add_node("subgraph_router", subgraph_router)
     workflow.add_node("observe", observe_node)
 
     # --------------------------------------------------------------
-    # Entry point — guardrail runs first to screen the user prompt
+    # Entry point — context loader runs first, then guardrail
+    # context_node fetches user/store snapshot (one DB round-trip)
+    # before any other node so personalization is available globally.
     # --------------------------------------------------------------
 
-    workflow.set_entry_point("grader")
+    workflow.set_entry_point("context")
+
+    # context → grader (always; context_node never blocks the graph)
+    workflow.add_edge("context", "grader")
 
     # --------------------------------------------------------------
     # Conditional edges from grader
@@ -165,7 +188,17 @@ def build_graph(checkpointer=None):
         },
     )
 
-    workflow.add_edge("intent", "think")
+    workflow.add_conditional_edges(
+        "intent",
+        _route_after_intent,
+        {
+            "planner": "planner",
+            "think": "think",
+        },
+    )
+
+    # planner -> think
+    workflow.add_edge("planner", "think")
 
     # --------------------------------------------------------------
     # Conditional edges from think
@@ -199,11 +232,12 @@ def build_graph(checkpointer=None):
     workflow.add_edge("memory_query", "think")
 
     # --------------------------------------------------------------
-    # tool → observe → think (agent loop)
+    # tool → observe → subgraph_router → think (agent loop)
     # --------------------------------------------------------------
 
     workflow.add_edge("tool", "observe")
-    workflow.add_edge("observe", "think")
+    workflow.add_edge("observe", "subgraph_router")
+    workflow.add_edge("subgraph_router", "think")
 
     # --------------------------------------------------------------
     # Compile graph
