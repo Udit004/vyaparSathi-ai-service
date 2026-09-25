@@ -78,10 +78,10 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
     )
 
     # Store at user level (preferences, tone, language, etc.)
-    user_ok = await add_user_memory(user_id, messages)
+    user_ok = await add_user_memory(user_id, messages, curated_messages=messages)
 
     # Store at store level (patterns, decisions, store knowledge)
-    store_ok = await add_store_memory(store_id, messages)
+    store_ok = await add_store_memory(store_id, messages, curated_messages=messages)
 
     LOGGER.info(
         "memory_write_complete",

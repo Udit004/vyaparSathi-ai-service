@@ -65,6 +65,8 @@ from app.agent.nodes.interrupt_node import interrupt_node
 from app.agent.nodes.context_node import context_node
 from app.agent.nodes.subgraph_router import subgraph_router
 from app.agent.nodes.planner_node import planner_node
+from app.agent.nodes.critic_node import critic_node
+from app.agent.nodes.reflection_node import reflection_node
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +99,15 @@ def _route_after_grader(state: VyaparAgentState) -> str:
     return "intent"
 
 
+def _route_after_critic(state: VyaparAgentState) -> str:
+    """
+    Conditional edge function called after critic_node.
+    """
+    if state.get("goal_status") == "reflect":
+        return "reflection"
+    return END
+
+
 def _route_after_think(state: VyaparAgentState) -> str:
     """
     Conditional edge function called after think_node.
@@ -120,6 +131,9 @@ def _route_after_think(state: VyaparAgentState) -> str:
     # by the route handler as a background task after the SSE stream.
     if state.get("goal_status") == "complete":
         return END
+
+    if state.get("goal_status") == "review":
+        return "critic"
 
     # Agent requested tool calls
     if state.get("pending_tool_calls"):
@@ -161,6 +175,8 @@ def build_graph(checkpointer=None):
     workflow.add_node("tool", tool_node)
     workflow.add_node("subgraph_router", subgraph_router)
     workflow.add_node("observe", observe_node)
+    workflow.add_node("critic", critic_node)
+    workflow.add_node("reflection", reflection_node)
 
     # --------------------------------------------------------------
     # Entry point — context loader runs first, then guardrail
@@ -212,9 +228,29 @@ def build_graph(checkpointer=None):
             "interrupt": "interrupt",
             "memory_query": "memory_query",
             "tool": "tool",
+            "critic": "critic",
             "__end__": END,
         },
     )
+
+    # --------------------------------------------------------------
+    # Conditional edges from critic
+    # --------------------------------------------------------------
+
+    workflow.add_conditional_edges(
+        "critic",
+        _route_after_critic,
+        {
+            "reflection": "reflection",
+            "__end__": END,
+        },
+    )
+
+    # --------------------------------------------------------------
+    # reflection -> think
+    # --------------------------------------------------------------
+
+    workflow.add_edge("reflection", "think")
 
     # --------------------------------------------------------------
     # interrupt → think (graph pauses at interrupt() inside the node;
