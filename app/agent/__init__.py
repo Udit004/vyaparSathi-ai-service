@@ -32,6 +32,8 @@ from app.agent.checkpointer import (
 from app.agent.memory import (
     get_memory_client,
     is_enabled,
+    extract_multi_level_memory,
+    process_and_persist_memory,
     add_user_memory,
     search_user_memory,
     add_store_memory,
@@ -49,6 +51,8 @@ __all__ = [
     "close_checkpointer",
     "get_memory_client",
     "is_enabled",
+    "extract_multi_level_memory",
+    "process_and_persist_memory",
     "add_user_memory",
     "search_user_memory",
     "add_store_memory",

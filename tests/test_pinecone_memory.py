@@ -133,15 +133,11 @@ async def test_load_memory_context(mock_build_q, mock_multi, mock_store, mock_us
 
 
 @pytest.mark.asyncio
-@patch("app.agent.nodes.memory_write.add_multi_store_memory")
-@patch("app.agent.nodes.memory_write.add_store_memory")
-@patch("app.agent.nodes.memory_write.add_user_memory")
-async def test_memory_write_node(mock_user, mock_store, mock_multi):
+@patch("app.agent.nodes.memory_write.process_and_persist_memory")
+async def test_memory_write_node(mock_process):
     from app.agent.nodes.memory_write import memory_write_node
 
-    mock_user.return_value = True
-    mock_store.return_value = True
-    mock_multi.return_value = True
+    mock_process.return_value = {"user_ok": True, "store_ok": True, "multi_store_ok": True}
 
     state = {
         "should_persist_memory": True,
@@ -155,19 +151,14 @@ async def test_memory_write_node(mock_user, mock_store, mock_multi):
     res = await memory_write_node(state)
     assert res == {}
 
-    mock_user.assert_called_once()
-    mock_store.assert_called_once()
-    mock_multi.assert_called_once_with(
-        "user-101",
-        ["store-202", "store-203"],
-        [
+    mock_process.assert_called_once_with(
+        user_id="user-101",
+        store_id="store-202",
+        messages=[
             {"role": "user", "content": "What are my restock options?"},
             {"role": "assistant", "content": "Here are your urgent restock items..."},
         ],
-        curated_messages=[
-            {"role": "user", "content": "What are my restock options?"},
-            {"role": "assistant", "content": "Here are your urgent restock items..."},
-        ],
+        store_ids=["store-202", "store-203"],
     )
 
 
@@ -203,3 +194,50 @@ async def test_reconcile_and_update_memory(mock_query, mock_get_llm, mock_upsert
         {"user_id": "u1"},
         existing_id="mem_old_1",
     )
+
+
+@pytest.mark.asyncio
+@patch("app.lib.llm.get_llm")
+async def test_extract_multi_level_memory(mock_get_llm):
+    from app.agent.memory import extract_multi_level_memory
+
+    mock_llm = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.content = (
+        '{"user_preferences": ["Prefers Hindi"], "store_knowledge": ["Amul arrives Tuesdays"], "multi_store_knowledge": []}'
+    )
+    mock_llm.ainvoke.return_value = mock_res
+    mock_get_llm.return_value = mock_llm
+
+    messages = [{"role": "user", "content": "Please answer in Hindi. Amul comes on Tuesdays."}]
+    res = await extract_multi_level_memory(messages)
+
+    assert res["user_preferences"] == ["Prefers Hindi"]
+    assert res["store_knowledge"] == ["Amul arrives Tuesdays"]
+    assert res["multi_store_knowledge"] == []
+
+
+@pytest.mark.asyncio
+@patch("app.agent.memory.add_multi_store_memory")
+@patch("app.agent.memory.add_store_memory")
+@patch("app.agent.memory.add_user_memory")
+@patch("app.agent.memory.extract_multi_level_memory")
+async def test_process_and_persist_memory(mock_extract, mock_user, mock_store, mock_multi):
+    from app.agent.memory import process_and_persist_memory
+
+    mock_extract.return_value = {
+        "user_preferences": ["User prefers English"],
+        "store_knowledge": [],
+        "multi_store_knowledge": ["Transfer excess stock from warehouse"],
+    }
+    mock_user.return_value = True
+    mock_multi.return_value = True
+
+    messages = [{"role": "user", "content": "Sample"}]
+    res = await process_and_persist_memory(user_id="u1", store_id="s1", messages=messages)
+
+    assert res == {"user_ok": True, "store_ok": True, "multi_store_ok": True}
+    mock_user.assert_called_once()
+    mock_store.assert_not_called()
+    mock_multi.assert_called_once()
+

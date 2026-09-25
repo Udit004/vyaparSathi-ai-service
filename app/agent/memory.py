@@ -45,6 +45,8 @@ from app.agent.prompts.summarizer_prompts import (
     MEMORY_EXTRACTION_INSTRUCTION,
     MEMORY_QUERY_INSTRUCTION,
     SUMMARIZER_MEMORY_INSTRUCTION,
+    MULTI_LEVEL_MEMORY_EXTRACTION_INSTRUCTION,
+    MEMORY_RECONCILIATION_INSTRUCTION,
 )
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory.pinecone")
@@ -270,28 +272,11 @@ async def _reconcile_and_update_memory(
         return await _upsert_memory_vector(memory_type, new_candidate_text, metadata_fields)
 
     reconciliation_prompt = (
-        "You are an expert AI Memory Reconciler for a retail store copilot.\n\n"
-        "Your task:\n"
-        "Compare the NEW CANDIDATE FACT against EXISTING MEMORIES.\n"
-        "Maintain strict consistency without duplication, contradiction, or stale facts.\n\n"
+        f"{MEMORY_RECONCILIATION_INSTRUCTION}\n\n"
         "EXISTING MEMORIES:\n"
         + "\n".join([f"- ID: {m['id']} | Content: \"{m['text']}\"" for m in existing_memories])
         + "\n\nNEW CANDIDATE FACT:\n"
-        + f'"{new_candidate_text}"\n\n'
-        "Determine appropriate action for each item:\n"
-        "- If the new fact updates or replaces an existing memory (e.g. preference or schedule changed), output UPDATE for that ID with consolidated text.\n"
-        "- If the new fact contradicts an existing memory, output DELETE for that ID.\n"
-        "- If the new fact is completely new and not covered by existing memories, output ADD with the new text.\n"
-        "- If the new fact is already fully covered and identical to an existing memory, output NO_CHANGE.\n\n"
-        "Return ONLY a valid JSON object matching this schema:\n"
-        "{\n"
-        '  "actions": [\n'
-        '    {"action": "UPDATE", "id": "mem_id", "text": "updated consolidated text"},\n'
-        '    {"action": "DELETE", "id": "mem_id"},\n'
-        '    {"action": "ADD", "text": "new memory text"},\n'
-        '    {"action": "NO_CHANGE", "id": "mem_id"}\n'
-        "  ]\n"
-        "}\n"
+        + f'"{new_candidate_text}"\n'
     )
 
     try:
@@ -346,6 +331,142 @@ async def _reconcile_and_update_memory(
 
 
 # ---------------------------------------------------------------------------
+# Multi-Level Memory Extraction & Pipeline Core
+# ---------------------------------------------------------------------------
+
+async def extract_multi_level_memory(messages: list[dict]) -> dict[str, list[str]]:
+    """
+    Analyze conversation messages using LLM to extract durable, concise facts
+    categorized strictly by memory level (user_preferences, store_knowledge, multi_store_knowledge).
+
+    Filters out ephemeral Q&A logs, raw turns, greetings, out-of-scope queries, and temporary numbers.
+    Returns dict: {"user_preferences": [...], "store_knowledge": [...], "multi_store_knowledge": [...]}
+    """
+    if not messages:
+        return {"user_preferences": [], "store_knowledge": [], "multi_store_knowledge": []}
+
+    formatted_turns = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "user")).upper()
+            content = msg.get("content", "")
+            if content and isinstance(content, str):
+                formatted_turns.append(f"{role}: {content}")
+
+    chat_text = "\n\n".join(formatted_turns)
+    if not chat_text.strip():
+        return {"user_preferences": [], "store_knowledge": [], "multi_store_knowledge": []}
+
+    prompt = (
+        f"{MULTI_LEVEL_MEMORY_EXTRACTION_INSTRUCTION}\n\n"
+        f"CONVERSATION EXCHANGE TO ANALYZE:\n{chat_text}"
+    )
+
+    try:
+        from app.lib.llm import get_llm
+        llm = get_llm()
+        if llm:
+            res = await llm.ainvoke(prompt)
+            raw_json_str = res.content if hasattr(res, "content") else str(res)
+        else:
+            raw_json_str = await summarize(
+                text=chat_text,
+                instruction=MULTI_LEVEL_MEMORY_EXTRACTION_INSTRUCTION,
+                max_tokens=512,
+            )
+
+        extracted_data = {}
+        if raw_json_str and "{" in raw_json_str:
+            json_start = raw_json_str.find("{")
+            json_end = raw_json_str.rfind("}") + 1
+            json_snippet = raw_json_str[json_start:json_end]
+            extracted_data = json.loads(json_snippet)
+
+        user_prefs = [str(x).strip() for x in extracted_data.get("user_preferences", []) if str(x).strip()]
+        store_know = [str(x).strip() for x in extracted_data.get("store_knowledge", []) if str(x).strip()]
+        multi_know = [str(x).strip() for x in extracted_data.get("multi_store_knowledge", []) if str(x).strip()]
+
+        LOGGER.info(
+            "multi_level_memory_extracted",
+            user_prefs_count=len(user_prefs),
+            store_know_count=len(store_know),
+            multi_know_count=len(multi_know),
+        )
+
+        return {
+            "user_preferences": user_prefs,
+            "store_knowledge": store_know,
+            "multi_store_knowledge": multi_know,
+        }
+    except Exception as exc:
+        LOGGER.error("multi_level_memory_extraction_failed", error=str(exc), exc_info=True)
+        return {"user_preferences": [], "store_knowledge": [], "multi_store_knowledge": []}
+
+
+async def process_and_persist_memory(
+    *,
+    user_id: str,
+    store_id: str,
+    messages: list[dict],
+    store_ids: list[str] | None = None,
+) -> dict[str, bool]:
+    """
+    Main Multi-Level Memory Pipeline.
+
+    1. Extract level-specific durable facts using LLM (user_preferences, store_knowledge, multi_store_knowledge).
+    2. Skip memory levels that have no extracted facts (prevents noise and redundant DB queries).
+    3. Reconcile extracted facts against existing vector memories via LLM.
+    4. Upsert/Update/Delete vectors in Pinecone index.
+    """
+    if not messages or (not user_id and not store_id):
+        return {"user_ok": True, "store_ok": True, "multi_store_ok": True}
+
+    extracted = await extract_multi_level_memory(messages)
+
+    user_prefs = extracted.get("user_preferences", [])
+    store_know = extracted.get("store_knowledge", [])
+    multi_know = extracted.get("multi_store_knowledge", [])
+
+    user_ok = True
+    store_ok = True
+    multi_store_ok = True
+
+    # Process Level 1: User Preferences
+    if user_prefs and user_id:
+        user_items = [{"content": fact} for fact in user_prefs]
+        user_ok = await add_user_memory(user_id, messages, curated_messages=user_items)
+
+    # Process Level 2: Store Knowledge
+    if store_know and store_id:
+        store_items = [{"content": fact} for fact in store_know]
+        store_ok = await add_store_memory(store_id, messages, curated_messages=store_items)
+
+    # Process Level 3: Multi-Store Knowledge
+    if multi_know and user_id:
+        s_ids = store_ids or [store_id]
+        multi_items = [{"content": fact} for fact in multi_know]
+        multi_store_ok = await add_multi_store_memory(user_id, s_ids, messages, curated_messages=multi_items)
+
+    LOGGER.info(
+        "pinecone_memory_pipeline_complete",
+        user_id=user_id,
+        store_id=store_id,
+        user_prefs_processed=len(user_prefs),
+        store_know_processed=len(store_know),
+        multi_know_processed=len(multi_know),
+        user_ok=user_ok,
+        store_ok=store_ok,
+        multi_store_ok=multi_store_ok,
+    )
+
+    return {
+        "user_ok": user_ok,
+        "store_ok": store_ok,
+        "multi_store_ok": multi_store_ok,
+    }
+
+
+# ---------------------------------------------------------------------------
 # LEVEL 1: User Preference Memory (user_id)
 # ---------------------------------------------------------------------------
 
@@ -363,7 +484,7 @@ async def add_user_memory(
 
     curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
     if not curated:
-        return False
+        return True
 
     filter_dict = {
         "memory_type": TYPE_USER_PREFERENCE,
@@ -372,7 +493,7 @@ async def add_user_memory(
 
     success_all = True
     for item in curated:
-        content = item.get("content", "")
+        content = item.get("content", "") if isinstance(item, dict) else str(item)
         if content:
             ok = await _reconcile_and_update_memory(
                 memory_type=TYPE_USER_PREFERENCE,
@@ -418,7 +539,7 @@ async def add_store_memory(
 
     curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
     if not curated:
-        return False
+        return True
 
     filter_dict = {
         "memory_type": TYPE_STORE_MEMORY,
@@ -427,7 +548,7 @@ async def add_store_memory(
 
     success_all = True
     for item in curated:
-        content = item.get("content", "")
+        content = item.get("content", "") if isinstance(item, dict) else str(item)
         if content:
             ok = await _reconcile_and_update_memory(
                 memory_type=TYPE_STORE_MEMORY,
@@ -474,7 +595,7 @@ async def add_multi_store_memory(
 
     curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
     if not curated:
-        return False
+        return True
 
     store_ids_str = ",".join(str(s) for s in store_ids) if store_ids else ""
     filter_dict = {
@@ -484,7 +605,7 @@ async def add_multi_store_memory(
 
     success_all = True
     for item in curated:
-        content = item.get("content", "")
+        content = item.get("content", "") if isinstance(item, dict) else str(item)
         if content:
             ok = await _reconcile_and_update_memory(
                 memory_type=TYPE_MULTI_STORE_MEMORY,
@@ -612,20 +733,21 @@ async def build_memory_query(user_prompt: str, *, current_goal: str = "") -> str
 
 
 async def curate_memory_messages(messages: list[dict]) -> list[dict]:
-    """Convert exchange into durable memory record."""
-    text = _flatten_results(messages)
-    if not text.strip():
+    """Convert exchange into durable memory records across all levels."""
+    if not messages:
         return []
 
-    extracted = await summarize(
-        text,
-        instruction=MEMORY_EXTRACTION_INSTRUCTION,
-        max_tokens=160,
+    extracted = await extract_multi_level_memory(messages)
+    all_facts = (
+        extracted.get("user_preferences", [])
+        + extracted.get("store_knowledge", [])
+        + extracted.get("multi_store_knowledge", [])
     )
-    extracted = (extracted or "").strip()
-    if not extracted or extracted.upper() == "NONE":
+
+    if not all_facts:
         return []
-    return [{"role": "user", "content": extracted}]
+
+    return [{"role": "user", "content": fact} for fact in all_facts]
 
 
 def _filter_relevant_results(results: list[dict]) -> list[dict]:
