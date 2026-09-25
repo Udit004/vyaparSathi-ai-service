@@ -497,7 +497,7 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 thread_id=thread_id,
             )
 
-            config = {"configurable": {"thread_id": thread_id}}
+            config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 100}
 
             result: dict = {}
 
@@ -732,7 +732,7 @@ async def clarify(
     LOGGER.info("clarify_message_persisted", chat_id=chat_id)
 
     graph = build_graph(checkpointer=get_checkpointer())
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 100}
 
     tools_used_set: set[str] = set()
 

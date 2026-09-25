@@ -123,9 +123,10 @@ def _route_after_think(state: VyaparAgentState) -> str:
     Priority (highest to lowest):
         1. If needs_clarification → go to interrupt node
         2. If memory_query_needed → go to memory_query node
-        3. If pending_tool_calls → go to tool node
-        4. If goal complete → END (memory write happens in background)
-        5. Otherwise → END
+        3. If goal complete → END
+        4. If loop_count >= max_loops → END (prevent infinite recursion)
+        5. If pending_tool_calls → go to tool node
+        6. Otherwise → END
     """
     # Clarification takes highest priority — the agent is uncertain
     if state.get("needs_clarification", False):
@@ -142,6 +143,12 @@ def _route_after_think(state: VyaparAgentState) -> str:
 
     if state.get("goal_status") == "review":
         return "critic"
+
+    # Max loop guard — enforce hard ceiling to prevent recursion loops
+    loop_count = state.get("loop_count", 0)
+    max_loops = state.get("max_loops", 5)
+    if loop_count >= max_loops:
+        return END
 
     # Agent requested tool calls
     if state.get("pending_tool_calls"):
