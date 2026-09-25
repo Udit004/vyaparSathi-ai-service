@@ -1,31 +1,45 @@
 """
 app/agent/memory.py
 ===================
-mem0 integration for long-term user preferences and store knowledge.
+Custom Pinecone Vector Database Long-Term Memory (LTM) Manager.
 
-Uses the Mem0 Python SDK (MemoryClient) to store and retrieve
-cross-session memory for:
+Replaces mem0 with a multi-level vector memory system built directly on Pinecone
+and Gemini Embeddings (models/gemini-embedding-001).
 
-    - User preferences  (namespace = user_id)
-    - Store knowledge   (namespace = store_id, isolated per store)
+Memory Levels & Architecture:
+-----------------------------
+1. USER PREFERENCES (`user_preference`)
+   - Scoped by `user_id`.
+   - Stores user-specific preferences (language, response tone, report detail, owner business goals).
 
-The client is initialized once as an application-level singleton.
-If MEM0_API_KEY is not configured, all functions degrade gracefully
-(no-op) so the agent still works without long-term memory.
+2. STORE MEMORY (`store_memory`)
+   - Scoped by `store_id` (fully isolated per store).
+   - Stores store-specific domain facts, local restock schedules, peak sales patterns, supplier notes.
 
-NOTE: The mem0 SDK is synchronous. We wrap all calls in
-``asyncio.to_thread()`` so they don't block the async event loop.
+3. MULTI-STORE MEMORY (`multi_store_memory`)
+   - Scoped by `user_id` and list of `store_ids`.
+   - Stores cross-store chain strategy, inter-store inventory transfer patterns, enterprise insights.
+
+Memory Reconciliation & De-duplication:
+--------------------------------------
+- Before adding new facts, existing matching memories are fetched from Pinecone.
+- A fast LLM reconciliation call evaluates whether to ADD, UPDATE (replace old memory ID),
+  DELETE (remove obsolete fact), or NO_CHANGE (prevent duplicates).
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime
+import json
 import os
+import uuid
 from typing import Any, Optional
 
 import structlog
 
 from app.config.settings import get_settings
+from app.lib.pinecone import get_pinecone_client, ensure_index_exists
 from app.lib.summarizer import summarize
 from app.agent.prompts.summarizer_prompts import (
     MEMORY_EXTRACTION_INSTRUCTION,
@@ -33,111 +47,306 @@ from app.agent.prompts.summarizer_prompts import (
     SUMMARIZER_MEMORY_INSTRUCTION,
 )
 
-LOGGER = structlog.get_logger("vyaparsathi.ai.memory")
+LOGGER = structlog.get_logger("vyaparsathi.ai.memory.pinecone")
+
+# Memory Types
+TYPE_USER_PREFERENCE = "user_preference"
+TYPE_STORE_MEMORY = "store_memory"
+TYPE_MULTI_STORE_MEMORY = "multi_store_memory"
 
 
 # ---------------------------------------------------------------------------
-# Application-level singleton
+# Embedding & Index Helpers
 # ---------------------------------------------------------------------------
 
-_client: Optional[Any] = None  # mem0.MemoryClient
-_enabled: bool = False
-_project_instructions_configured: bool = False
+def _get_embeddings():
+    """Get Gemini embeddings instance with automatic key rotation and rate-limit handling."""
+    from app.lib.gemini_keys import RotatingGoogleGenerativeAIEmbeddings, get_gemini_api_keys
 
-_MEM0_CUSTOM_INSTRUCTIONS = (
-    "This project is Vyapar Copilot for one Indian retail store. Store only "
-    "durable information useful across future conversations.\n\n"
-    "Extract:\n"
-    "- Explicit user communication preferences such as language, tone, and detail.\n"
-    "- Store-specific facts, recurring inventory or sales patterns, and explicit "
-    "restocking or business decisions.\n\n"
-    "Exclude:\n"
-    "- Greetings, small talk, one-off questions, temporary tool outputs, and "
-    "assistant refusal text.\n"
-    "- Passwords, API keys, tokens, personal identifiers, and sensitive financial "
-    "details.\n"
-    "- Guesses or facts that are not explicitly supported by the conversation."
-)
-
-
-# ---------------------------------------------------------------------------
-# Initialization
-# ---------------------------------------------------------------------------
-
-def get_memory_client():
-    """
-    Return the shared Mem0 MemoryClient, creating it on first access.
-
-    Returns None if mem0 is not configured or initialization fails.
-    """
-    global _client, _enabled
-
-    if _client is not None:
-        return _client
-
-    settings = get_settings()
-
-    if not settings.mem0_enabled or not settings.mem0_api_key:
-        LOGGER.info("mem0_disabled", reason="MEM0_API_KEY not set or disabled")
+    keys = get_gemini_api_keys()
+    if not keys:
+        LOGGER.warning("gemini_api_key_missing_for_embeddings")
         return None
 
-    try:
-        from mem0 import MemoryClient
-
-        _client = MemoryClient(api_key=settings.mem0_api_key)
-        _enabled = True
-        _configure_project_instructions(_client)
-        LOGGER.info(
-            "mem0_initialized",
-            api_key_prefix=settings.mem0_api_key[:8],
-            mem0_enabled=settings.mem0_enabled,
-        )
-    except Exception as exc:
-        LOGGER.error("mem0_init_failed", error=str(exc), exc_info=True)
-        _client = None
-        _enabled = False
-
-    return _client
+    return RotatingGoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 
 
-def _configure_project_instructions(client: Any) -> None:
-    """Configure Mem0 extraction rules once, without making startup fatal."""
-    global _project_instructions_configured
-    if _project_instructions_configured:
-        return
+def _get_pinecone_index():
+    """Get Pinecone index object for vyapar-sathi."""
+    pc = get_pinecone_client()
+    if not pc:
+        return None
+
+    settings = get_settings()
+    index_name = settings.pinecone_index_name or "vyapar-sathi"
 
     try:
-        project = getattr(client, "project", None)
-        update = getattr(project, "update", None)
-        if callable(update):
-            update(custom_instructions=_MEM0_CUSTOM_INSTRUCTIONS)
-            _project_instructions_configured = True
-            LOGGER.info("mem0_custom_instructions_configured")
-        else:
-            LOGGER.warning("mem0_custom_instructions_unsupported")
+        return pc.Index(index_name)
     except Exception as exc:
-        LOGGER.warning("mem0_custom_instructions_failed", error=str(exc))
+        LOGGER.error("pinecone_index_access_failed", error=str(exc))
+        return None
+
+
+def get_memory_client():
+    """Alias for backward compatibility."""
+    return get_pinecone_client()
 
 
 def is_enabled() -> bool:
-    """Return True if mem0 is available and configured."""
-    return _enabled and _client is not None
+    """Return True if Pinecone memory system is configured and available."""
+    settings = get_settings()
+    api_key = settings.pinecone_api_key or os.getenv("PINCONE_API_KEY")
+    gemini_key = settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
+    return bool(api_key and gemini_key)
 
 
 def get_memory_status() -> dict:
-    """Return diagnostic info about mem0 configuration."""
+    """Return diagnostic info about Pinecone long-term memory system."""
     settings = get_settings()
+    pc = get_pinecone_client()
+    index_stats = None
+
+    if pc:
+        try:
+            index_name = settings.pinecone_index_name or "vyapar-sathi"
+            index = pc.Index(index_name)
+            index_stats = index.describe_index_stats()
+        except Exception:
+            index_stats = None
+
     return {
         "enabled": is_enabled(),
-        "mem0_enabled_setting": settings.mem0_enabled,
-        "has_api_key": bool(settings.mem0_api_key),
-        "api_key_prefix": settings.mem0_api_key[:8] if settings.mem0_api_key else None,
-        "client_initialized": _client is not None,
+        "provider": "pinecone",
+        "has_pinecone_api_key": bool(settings.pinecone_api_key or os.getenv("PINCONE_API_KEY")),
+        "has_gemini_api_key": bool(settings.gemini_api_key or os.getenv("GEMINI_API_KEY")),
+        "index_name": settings.pinecone_index_name or "vyapar-sathi",
+        "index_stats": index_stats,
     }
 
 
 # ---------------------------------------------------------------------------
-# User memory (namespace = user_id)
+# Memory Persistence Core (Upsert / Delete)
+# ---------------------------------------------------------------------------
+
+async def _upsert_memory_vector(
+    memory_type: str,
+    text: str,
+    metadata_fields: dict[str, Any],
+    existing_id: str | None = None,
+) -> bool:
+    """
+    Generate embedding for text and upsert to Pinecone index with metadata.
+    """
+    if not text or not text.strip():
+        return False
+
+    embeddings_service = _get_embeddings()
+    index = _get_pinecone_index()
+
+    if not embeddings_service or not index:
+        LOGGER.warning("pinecone_upsert_skipped", reason="embeddings or pinecone index unavailable")
+        return False
+
+    try:
+        vector = await asyncio.to_thread(embeddings_service.embed_query, text)
+        memory_id = existing_id or f"mem_{memory_type}_{uuid.uuid4().hex[:12]}"
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        metadata = {
+            "memory_type": memory_type,
+            "text": text,
+            "updated_at": now_iso,
+            **metadata_fields,
+        }
+        if "created_at" not in metadata:
+            metadata["created_at"] = now_iso
+
+        await asyncio.to_thread(
+            index.upsert,
+            vectors=[{"id": memory_id, "values": vector, "metadata": metadata}],
+        )
+
+        LOGGER.info(
+            "pinecone_memory_upserted",
+            memory_type=memory_type,
+            memory_id=memory_id,
+            text_preview=text[:80],
+        )
+        return True
+    except Exception as exc:
+        LOGGER.error("pinecone_upsert_failed", memory_type=memory_type, error=str(exc), exc_info=True)
+        return False
+
+
+async def _delete_memory_vector(memory_id: str) -> bool:
+    """Delete a memory vector entry by ID from Pinecone index."""
+    index = _get_pinecone_index()
+    if not index or not memory_id:
+        return False
+    try:
+        await asyncio.to_thread(index.delete, ids=[memory_id])
+        LOGGER.info("pinecone_memory_deleted", memory_id=memory_id)
+        return True
+    except Exception as exc:
+        LOGGER.error("pinecone_delete_failed", memory_id=memory_id, error=str(exc))
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Memory Search Core (Query)
+# ---------------------------------------------------------------------------
+
+async def _query_memory_vectors(
+    filter_dict: dict[str, Any],
+    query_text: str,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Embed query text and search Pinecone index using metadata filter.
+    """
+    embeddings_service = _get_embeddings()
+    index = _get_pinecone_index()
+
+    if not embeddings_service or not index:
+        return []
+
+    try:
+        query_vector = await asyncio.to_thread(embeddings_service.embed_query, query_text)
+
+        response = await asyncio.to_thread(
+            index.query,
+            vector=query_vector,
+            filter=filter_dict,
+            top_k=top_k,
+            include_metadata=True,
+        )
+
+        matches = getattr(response, "matches", []) or []
+        results = []
+        for match in matches:
+            meta = match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {}
+            score = match.get("score", 0.0) if isinstance(match, dict) else getattr(match, "score", 0.0)
+            mem_text = meta.get("text") or meta.get("memory") or ""
+
+            if mem_text:
+                results.append({
+                    "id": getattr(match, "id", "") if not isinstance(match, dict) else match.get("id", ""),
+                    "memory": mem_text,
+                    "text": mem_text,
+                    "score": float(score),
+                    "created_at": meta.get("created_at"),
+                    "memory_type": meta.get("memory_type"),
+                    "metadata": meta,
+                })
+
+        LOGGER.info("pinecone_memory_searched", filter=filter_dict, query=query_text[:60], matches=len(results))
+        return results
+    except Exception as exc:
+        LOGGER.error("pinecone_search_failed", filter=filter_dict, error=str(exc), exc_info=True)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# LLM Memory Reconciliation & Deduplication Engine
+# ---------------------------------------------------------------------------
+
+async def _reconcile_and_update_memory(
+    memory_type: str,
+    new_candidate_text: str,
+    filter_dict: dict[str, Any],
+    metadata_fields: dict[str, Any],
+) -> bool:
+    """
+    1. Fetch existing matching memories from Pinecone under filter_dict.
+    2. Pass existing memories + candidate fact to small LLM reconciler.
+    3. Execute returned vector actions (ADD, UPDATE, DELETE, NO_CHANGE).
+    """
+    if not new_candidate_text or not new_candidate_text.strip():
+        return False
+
+    existing_memories = await _query_memory_vectors(filter_dict, new_candidate_text, top_k=5)
+
+    if not existing_memories:
+        return await _upsert_memory_vector(memory_type, new_candidate_text, metadata_fields)
+
+    reconciliation_prompt = (
+        "You are an expert AI Memory Reconciler for a retail store copilot.\n\n"
+        "Your task:\n"
+        "Compare the NEW CANDIDATE FACT against EXISTING MEMORIES.\n"
+        "Maintain strict consistency without duplication, contradiction, or stale facts.\n\n"
+        "EXISTING MEMORIES:\n"
+        + "\n".join([f"- ID: {m['id']} | Content: \"{m['text']}\"" for m in existing_memories])
+        + "\n\nNEW CANDIDATE FACT:\n"
+        + f'"{new_candidate_text}"\n\n'
+        "Determine appropriate action for each item:\n"
+        "- If the new fact updates or replaces an existing memory (e.g. preference or schedule changed), output UPDATE for that ID with consolidated text.\n"
+        "- If the new fact contradicts an existing memory, output DELETE for that ID.\n"
+        "- If the new fact is completely new and not covered by existing memories, output ADD with the new text.\n"
+        "- If the new fact is already fully covered and identical to an existing memory, output NO_CHANGE.\n\n"
+        "Return ONLY a valid JSON object matching this schema:\n"
+        "{\n"
+        '  "actions": [\n'
+        '    {"action": "UPDATE", "id": "mem_id", "text": "updated consolidated text"},\n'
+        '    {"action": "DELETE", "id": "mem_id"},\n'
+        '    {"action": "ADD", "text": "new memory text"},\n'
+        '    {"action": "NO_CHANGE", "id": "mem_id"}\n'
+        "  ]\n"
+        "}\n"
+    )
+
+    try:
+        from app.lib.llm import get_llm
+        llm = get_llm()
+        if llm:
+            res = await llm.ainvoke(reconciliation_prompt)
+            raw_json_str = res.content if hasattr(res, "content") else str(res)
+        else:
+            raw_json_str = await summarize(
+                text=reconciliation_prompt,
+                instruction="You are a JSON memory reconciler. Output valid JSON only.",
+                max_tokens=256,
+            )
+
+        actions_data = None
+        if raw_json_str and "{" in raw_json_str:
+            json_start = raw_json_str.find("{")
+            json_end = raw_json_str.rfind("}") + 1
+            json_snippet = raw_json_str[json_start:json_end]
+            actions_data = json.loads(json_snippet)
+
+        actions = actions_data.get("actions", []) if isinstance(actions_data, dict) else []
+
+        if not actions:
+            highest_score = max([m.get("score", 0.0) for m in existing_memories], default=0.0)
+            if highest_score > 0.85:
+                LOGGER.info("reconciliation_fallback_no_change", highest_score=highest_score)
+                return True
+            return await _upsert_memory_vector(memory_type, new_candidate_text, metadata_fields)
+
+        for act in actions:
+            action_type = str(act.get("action", "")).upper()
+            target_id = act.get("id")
+            text_val = act.get("text") or new_candidate_text
+
+            if action_type == "ADD":
+                await _upsert_memory_vector(memory_type, text_val, metadata_fields)
+            elif action_type == "UPDATE" and target_id:
+                await _upsert_memory_vector(memory_type, text_val, metadata_fields, existing_id=target_id)
+                LOGGER.info("pinecone_memory_reconciled_update", memory_id=target_id, text=text_val[:80])
+            elif action_type == "DELETE" and target_id:
+                await _delete_memory_vector(target_id)
+                LOGGER.info("pinecone_memory_reconciled_delete", memory_id=target_id)
+            elif action_type == "NO_CHANGE":
+                LOGGER.info("pinecone_memory_reconciled_no_change", memory_id=target_id)
+
+        return True
+    except Exception as exc:
+        LOGGER.error("reconciliation_failed_fallback_upsert", error=str(exc))
+        return await _upsert_memory_vector(memory_type, new_candidate_text, metadata_fields)
+
+
+# ---------------------------------------------------------------------------
+# LEVEL 1: User Preference Memory (user_id)
 # ---------------------------------------------------------------------------
 
 async def add_user_memory(
@@ -147,63 +356,52 @@ async def add_user_memory(
     curated_messages: list[dict] | None = None,
 ) -> bool:
     """
-    Store conversation messages into the user's long-term memory.
-
-    Args:
-        user_id: Authenticated user ID.
-        messages: List of {role, content} dicts from the conversation.
-
-    Returns:
-        True if the data was stored, False otherwise.
+    Extract, reconcile, and store durable user preferences into Pinecone.
     """
-    client = get_memory_client()
-    if not client or not messages:
-        if not client:
-            LOGGER.debug("add_user_memory_skip", reason="mem0 not configured")
+    if not messages and not curated_messages:
         return False
 
     curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
     if not curated:
-        LOGGER.debug("add_user_memory_skip", reason="no durable memory extracted")
         return False
 
-    try:
-        # mem0 SDK is synchronous — run in thread to avoid blocking event loop
-        result = await asyncio.to_thread(client.add, curated, user_id=user_id)
-        LOGGER.info("user_memory_added", user_id=user_id, count=len(curated), result=str(result)[:200])
-        return True
-    except Exception as exc:
-        LOGGER.error("user_memory_add_failed", user_id=user_id, error=str(exc), exc_info=True)
-        return False
+    filter_dict = {
+        "memory_type": TYPE_USER_PREFERENCE,
+        "user_id": str(user_id),
+    }
+
+    success_all = True
+    for item in curated:
+        content = item.get("content", "")
+        if content:
+            ok = await _reconcile_and_update_memory(
+                memory_type=TYPE_USER_PREFERENCE,
+                new_candidate_text=content,
+                filter_dict=filter_dict,
+                metadata_fields={"user_id": str(user_id)},
+            )
+            if not ok:
+                success_all = False
+
+    return success_all
 
 
-async def search_user_memory(user_id: str, query: str) -> list[dict]:
+async def search_user_memory(user_id: str, query: str, top_k: int = 5) -> list[dict]:
     """
-    Search the user's long-term memory for relevant facts/preferences.
-
-    Args:
-        user_id: Authenticated user ID.
-        query: Natural-language query string.
-
-    Returns:
-        List of memory result dicts (may be empty).
+    Search Pinecone for user preferences (language, tone, goals).
     """
-    client = get_memory_client()
-    if not client:
+    if not user_id:
         return []
 
-    try:
-        results = await asyncio.to_thread(client.search, query, user_id=user_id)
-        count = len(results) if results else 0
-        LOGGER.info("user_memory_searched", user_id=user_id, query=query[:80], results=count)
-        return results or []
-    except Exception as exc:
-        LOGGER.error("user_memory_search_failed", user_id=user_id, error=str(exc), exc_info=True)
-        return []
+    filter_dict = {
+        "memory_type": TYPE_USER_PREFERENCE,
+        "user_id": str(user_id),
+    }
+    return await _query_memory_vectors(filter_dict, query, top_k=top_k)
 
 
 # ---------------------------------------------------------------------------
-# Store memory (namespace = store_id, isolated per store)
+# LEVEL 2: Store Memory (store_id)
 # ---------------------------------------------------------------------------
 
 async def add_store_memory(
@@ -213,58 +411,108 @@ async def add_store_memory(
     curated_messages: list[dict] | None = None,
 ) -> bool:
     """
-    Store conversation messages into the store's long-term memory.
-
-    Each store is fully isolated — mem0 namespaces by store_id.
-
-    Args:
-        store_id: Store being queried.
-        messages: List of {role, content} dicts from the conversation.
-
-    Returns:
-        True if stored, False otherwise.
+    Extract, reconcile, and store store-specific domain facts into Pinecone (isolated per store_id).
     """
-    client = get_memory_client()
-    if not client or not messages:
+    if (not messages and not curated_messages) or not store_id:
         return False
 
     curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
     if not curated:
-        LOGGER.debug("add_store_memory_skip", reason="no durable memory extracted")
         return False
 
-    try:
-        result = await asyncio.to_thread(client.add, curated, user_id=store_id)
-        LOGGER.info("store_memory_added", store_id=store_id, count=len(curated), result=str(result)[:200])
-        return True
-    except Exception as exc:
-        LOGGER.error("store_memory_add_failed", store_id=store_id, error=str(exc), exc_info=True)
+    filter_dict = {
+        "memory_type": TYPE_STORE_MEMORY,
+        "store_id": str(store_id),
+    }
+
+    success_all = True
+    for item in curated:
+        content = item.get("content", "")
+        if content:
+            ok = await _reconcile_and_update_memory(
+                memory_type=TYPE_STORE_MEMORY,
+                new_candidate_text=content,
+                filter_dict=filter_dict,
+                metadata_fields={"store_id": str(store_id)},
+            )
+            if not ok:
+                success_all = False
+
+    return success_all
+
+
+async def search_store_memory(store_id: str, query: str, top_k: int = 5) -> list[dict]:
+    """
+    Search Pinecone for store-specific domain knowledge and past decisions.
+    """
+    if not store_id:
+        return []
+
+    filter_dict = {
+        "memory_type": TYPE_STORE_MEMORY,
+        "store_id": str(store_id),
+    }
+    return await _query_memory_vectors(filter_dict, query, top_k=top_k)
+
+
+# ---------------------------------------------------------------------------
+# LEVEL 3: Multi-Store Memory (user_id + list of store_ids)
+# ---------------------------------------------------------------------------
+
+async def add_multi_store_memory(
+    user_id: str,
+    store_ids: list[str],
+    messages: list[dict],
+    *,
+    curated_messages: list[dict] | None = None,
+) -> bool:
+    """
+    Extract, reconcile, and store multi-store enterprise knowledge into Pinecone.
+    """
+    if (not messages and not curated_messages) or not user_id:
         return False
 
+    curated = curated_messages if curated_messages is not None else await curate_memory_messages(messages)
+    if not curated:
+        return False
 
-async def search_store_memory(store_id: str, query: str) -> list[dict]:
+    store_ids_str = ",".join(str(s) for s in store_ids) if store_ids else ""
+    filter_dict = {
+        "memory_type": TYPE_MULTI_STORE_MEMORY,
+        "user_id": str(user_id),
+    }
+
+    success_all = True
+    for item in curated:
+        content = item.get("content", "")
+        if content:
+            ok = await _reconcile_and_update_memory(
+                memory_type=TYPE_MULTI_STORE_MEMORY,
+                new_candidate_text=content,
+                filter_dict=filter_dict,
+                metadata_fields={
+                    "user_id": str(user_id),
+                    "store_ids": store_ids_str,
+                },
+            )
+            if not ok:
+                success_all = False
+
+    return success_all
+
+
+async def search_multi_store_memory(user_id: str, query: str, top_k: int = 5) -> list[dict]:
     """
-    Search the store's long-term memory for patterns, notes, past decisions.
-
-    Args:
-        store_id: Store being queried.
-        query: Natural-language query string.
-
-    Returns:
-        List of memory result dicts (may be empty).
+    Search Pinecone for multi-store / enterprise level strategies and insights.
     """
-    client = get_memory_client()
-    if not client:
+    if not user_id:
         return []
 
-    try:
-        results = await asyncio.to_thread(client.search, query, user_id=store_id)
-        count = len(results) if results else 0
-        LOGGER.info("store_memory_searched", store_id=store_id, query=query[:80], results=count)
-        return results or []
-    except Exception as exc:
-        LOGGER.error("store_memory_search_failed", store_id=store_id, error=str(exc), exc_info=True)
-        return []
+    filter_dict = {
+        "memory_type": TYPE_MULTI_STORE_MEMORY,
+        "user_id": str(user_id),
+    }
+    return await _query_memory_vectors(filter_dict, query, top_k=top_k)
 
 
 # ---------------------------------------------------------------------------
@@ -277,23 +525,43 @@ async def load_memory_context(
     store_id: str,
     user_prompt: str,
     current_goal: str = "",
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    store_ids: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """
-    Load both user-preference and store-knowledge memory for the agent.
+    Load user-preference, single-store, and multi-store memory from Pinecone.
+
+    Always loads basic user preferences (language, format, detail level) unconditionally,
+    plus query-relevant store & multi-store facts.
 
     Returns:
-        Tuple of (user_preferences, store_knowledge) dicts.
-        Each dict has a "raw" key with the list of mem0 results and
-        a "summary" key with a flattened text summary for the LLM.
+        Tuple of (user_preferences, store_knowledge, multi_store_knowledge) dicts.
     """
     memory_query = await build_memory_query(user_prompt, current_goal=current_goal)
-    user_results = await search_user_memory(user_id, memory_query)
-    store_results = await search_store_memory(store_id, memory_query)
 
-    # Cap raw results to keep the persisted state bounded — the summary
-    # is what the LLM actually reads.
-    user_results = _cap_results(_filter_relevant_results(user_results))
+    # 1. Fetch user preferences (query-specific + general preference fallback)
+    user_results = await search_user_memory(user_id, memory_query)
+    if not user_results or len(user_results) < 2:
+        general_user = await search_user_memory(user_id, "user preference language tone format explanation detail business goals")
+        seen_user_ids = {u["id"] for u in user_results if "id" in u}
+        for g in general_user:
+            if g.get("id") not in seen_user_ids:
+                user_results.append(g)
+
+    # 2. Fetch store and multi-store knowledge
+    store_results = await search_store_memory(store_id, memory_query)
+    if not store_results or len(store_results) < 2:
+        general_store = await search_store_memory(store_id, "store facts rules supplier schedule restock inventory")
+        seen_store_ids = {s["id"] for s in store_results if "id" in s}
+        for s in general_store:
+            if s.get("id") not in seen_store_ids:
+                store_results.append(s)
+
+    multi_store_results = await search_multi_store_memory(user_id, memory_query)
+
+    # Keep user preferences intact without harsh threshold filtering
+    user_results = _cap_results(user_results)
     store_results = _cap_results(_filter_relevant_results(store_results))
+    multi_store_results = _cap_results(_filter_relevant_results(multi_store_results))
 
     user_prefs = {
         "raw": user_results,
@@ -303,8 +571,12 @@ async def load_memory_context(
         "raw": store_results,
         "summary": await summarize_memory_results(store_results, memory_query),
     }
+    multi_store_knowledge = {
+        "raw": multi_store_results,
+        "summary": await summarize_memory_results(multi_store_results, memory_query),
+    }
 
-    return user_prefs, store_knowledge
+    return user_prefs, store_knowledge, multi_store_knowledge
 
 
 def should_retrieve_memory(user_prompt: str) -> bool:
@@ -313,13 +585,13 @@ def should_retrieve_memory(user_prompt: str) -> bool:
     memory_signals = (
         "remember", "last time", "previous", "earlier", "we decided",
         "our decision", "usually", "prefer", "preference", "my language",
-        "my style", "what did we discuss",
+        "my style", "what did we discuss", "multi store", "across stores",
     )
     return any(signal in prompt for signal in memory_signals)
 
 
 async def build_memory_query(user_prompt: str, *, current_goal: str = "") -> str:
-    """Distill the current request into a focused Mem0 semantic-search query."""
+    """Distill request into a focused semantic search query."""
     prompt = (user_prompt or "").strip()
     if not prompt:
         return "retail store inventory sales forecasting restocking preferences"
@@ -340,11 +612,7 @@ async def build_memory_query(user_prompt: str, *, current_goal: str = "") -> str
 
 
 async def curate_memory_messages(messages: list[dict]) -> list[dict]:
-    """Convert a completed exchange into one durable memory record or skip it."""
-    if not os.environ.get("GROQ_API_KEY") and not os.environ.get("NVIDIA_API_KEY"):
-        LOGGER.debug("memory_curation_skip", reason="small model unavailable")
-        return []
-
+    """Convert exchange into durable memory record."""
     text = _flatten_results(messages)
     if not text.strip():
         return []
@@ -361,40 +629,26 @@ async def curate_memory_messages(messages: list[dict]) -> list[dict]:
 
 
 def _filter_relevant_results(results: list[dict]) -> list[dict]:
-    """Drop low-confidence scored results while preserving SDK results without scores."""
+    """Filter low similarity score results."""
     if not results:
         return []
 
     filtered = []
     for result in results:
         score = result.get("score") if isinstance(result, dict) else None
-        if isinstance(score, (int, float)) and score < 0.55:
+        if isinstance(score, (int, float)) and score < 0.40:
             continue
         filtered.append(result)
     return filtered
 
 
-# ---------------------------------------------------------------------------
-# Result capping — prevents mem0 from flooding the context window
-# ---------------------------------------------------------------------------
-
-# Hard caps on how much mem0 data we surface to the LLM per session.
-# mem0 can return a large, unbounded list of entries; without these caps
-# the summary string alone can balloon to ~50K tokens and blow the
-# context window.
 _MAX_MEMORY_ENTRIES = 5
 _MAX_MEMORY_CHARS = 2_000
 _MAX_MEMORY_ENTRY_CHARS = 400
 
 
 def _cap_results(results: list[dict]) -> list[dict]:
-    """
-    Trim a mem0 result list to a bounded size.
-
-    Keeps the first ``_MAX_MEMORY_ENTRIES`` results (mem0 ranks by
-    relevance, so the head of the list is the most relevant) and truncates
-    each entry's text to a sane length.
-    """
+    """Trim memory result list to a bounded size."""
     if not results:
         return []
 
@@ -410,14 +664,7 @@ def _cap_results(results: list[dict]) -> list[dict]:
 
 
 async def summarize_memory_results(results: list[dict], query: str) -> str:
-    """
-    Produce a compact summary of mem0 search results for the LLM.
-
-    Applies hard caps first (so we never send a huge payload to the
-    summarizer), then optionally re-summarizes with a small/fast model
-    (GROQ/NVIDIA) for extra compression. Falls back to the capped
-    flatten if no summarizer is available.
-    """
+    """Produce compact summary of vector memory search results."""
     results = _cap_results(results)
     if not results:
         return ""
@@ -426,7 +673,6 @@ async def summarize_memory_results(results: list[dict], query: str) -> str:
     if len(flat) <= _MAX_MEMORY_CHARS:
         return flat
 
-    # Use the small summarizer to compress further
     summary = await summarize(
         flat,
         instruction=SUMMARIZER_MEMORY_INSTRUCTION,
@@ -436,11 +682,26 @@ async def summarize_memory_results(results: list[dict], query: str) -> str:
 
 
 def _flatten_results(results: list[dict]) -> str:
-    """Flatten capped mem0 results into plain text (no LLM call)."""
+    """Flatten results into plain text."""
     parts = []
     for r in results:
         text = r.get("memory") or r.get("text") or str(r)
-        # Defensive: coerce to str so str.join never receives a list/dict
-        # (would raise "sequence item 0: expected str instance, list found").
         parts.append(str(text) if not isinstance(text, str) else text)
     return "\n".join(parts)
+
+
+def get_memory_status() -> dict[str, Any]:
+    """Return Pinecone Multi-Level LTM configuration and health status."""
+    from app.config.settings import get_settings
+    settings = get_settings()
+    index_ok = _get_pinecone_index() is not None
+    return {
+        "provider": "pinecone",
+        "has_pinecone_api_key": bool(settings.pinecone_api_key),
+        "has_gemini_api_key": bool(settings.gemini_api_key),
+        "index_name": getattr(settings, "pinecone_index", "vyapar-sathi"),
+        "pinecone_available": index_ok,
+        "embedding_model": "models/gemini-embedding-001",
+        "dimension": 3072,
+        "status": "healthy" if index_ok else "degraded",
+    }

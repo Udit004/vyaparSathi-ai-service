@@ -71,9 +71,9 @@ from app.agent.nodes.planner_node import planner_node
 # Router functions
 # ---------------------------------------------------------------------------
 
-def _route_after_intent(state: VyaparAgentState) -> str:
+def _route_after_memory_query(state: VyaparAgentState) -> str:
     """
-    Conditional edge function called after intent_node.
+    Conditional edge function called after memory_query node.
 
     Routes to the planner if the intent node identified the request as
     complex and needing planning (requires_planning is True).
@@ -82,6 +82,14 @@ def _route_after_intent(state: VyaparAgentState) -> str:
     if state.get("requires_planning", False) and not state.get("plan"):
         return "planner"
     return "think"
+
+
+def _route_after_intent(state: VyaparAgentState) -> str:
+    """
+    Conditional edge function called after intent_node.
+    Routes to memory_query so long-term memory is pre-loaded at the start of the loop.
+    """
+    return "memory_query"
 
 def _route_after_grader(state: VyaparAgentState) -> str:
     """
@@ -188,9 +196,13 @@ def build_graph(checkpointer=None):
         },
     )
 
+    # intent -> memory_query (pre-load long-term memory at start of loop)
+    workflow.add_edge("intent", "memory_query")
+
+    # memory_query -> planner or think
     workflow.add_conditional_edges(
-        "intent",
-        _route_after_intent,
+        "memory_query",
+        _route_after_memory_query,
         {
             "planner": "planner",
             "think": "think",
@@ -217,19 +229,10 @@ def build_graph(checkpointer=None):
     )
 
     # --------------------------------------------------------------
-    # interrupt → think (graph pauses at interrupt() inside the node;
-    # when resumed via Command(resume=...), the interrupt node stores
-    # the user's answer in clarification_history and the graph loops
-    # back to think so the LLM can incorporate the answer and continue)
+    # interrupt → think
     # --------------------------------------------------------------
 
     workflow.add_edge("interrupt", "think")
-
-    # --------------------------------------------------------------
-    # memory_query → think (loop back to synthesize memory)
-    # --------------------------------------------------------------
-
-    workflow.add_edge("memory_query", "think")
 
     # --------------------------------------------------------------
     # tool → observe → subgraph_router → think (agent loop)

@@ -959,12 +959,17 @@ async def _persist_memory_background(
     messages: list[dict],
 ) -> None:
     """
-    Persist conversation to mem0 long-term memory in the background.
+    Persist conversation to Pinecone long-term memory in the background.
 
     Runs after the SSE stream has completed and the client has received
     the response. Failures are logged but never affect the client.
     """
-    from app.agent.memory import add_user_memory, add_store_memory, curate_memory_messages
+    from app.agent.memory import (
+        add_user_memory,
+        add_store_memory,
+        add_multi_store_memory,
+        curate_memory_messages,
+    )
     import structlog
 
     logger = structlog.get_logger("vyaparsathi.ai.memory.background")
@@ -973,12 +978,14 @@ async def _persist_memory_background(
         curated = await curate_memory_messages(messages)
         user_ok = await add_user_memory(user_id, messages, curated_messages=curated)
         store_ok = await add_store_memory(store_id, messages, curated_messages=curated)
+        multi_store_ok = await add_multi_store_memory(user_id, [store_id], messages, curated_messages=curated)
         logger.info(
             "background_memory_persist_complete",
             user_id=user_id,
             store_id=store_id,
             user_ok=user_ok,
             store_ok=store_ok,
+            multi_store_ok=multi_store_ok,
         )
     except Exception as exc:
         logger.warning(
@@ -986,4 +993,5 @@ async def _persist_memory_background(
             user_id=user_id,
             store_id=store_id,
             error=str(exc),
+            exc_info=True,
         )

@@ -1,23 +1,22 @@
 """
 app/agent/nodes/memory_write.py
 ================================
-Memory write node — persists conversation summary to mem0 after the agent
-completes its run.
+Memory write node — persists conversation summary to the Pinecone Multi-Level
+Long-Term Memory System after the agent completes its run.
 
-This node runs AFTER the agent has produced its final answer. It:
+This node runs AFTER the agent has produced its final answer (typically invoked
+as a background task or post-response step). It:
 
-    1. Summarizes the conversation (user prompt + assistant response)
-    2. Stores the summary in user memory (namespace = user_id)
-       — captures preferences like language, tone, detail level
-    3. Stores the summary in store memory (namespace = store_id)
-       — captures store-specific patterns, decisions, and knowledge
+    1. Summarizes the conversation (user prompt + assistant response).
+    2. Stores the summary in USER memory (`add_user_memory`):
+       — captures preferences like language, tone, detail level, business goals.
+    3. Stores the summary in STORE memory (`add_store_memory`):
+       — captures store-specific patterns, restock decisions, vendor schedules.
+    4. Stores the summary in MULTI-STORE memory (`add_multi_store_memory`):
+       — captures cross-store transfer rules, chain strategies, multi-store insights.
 
-Memory is stored at two levels:
-    - USER level   → preferences, tone, language, detail level
-    - STORE level  → product patterns, category notes, past decisions
-
-The node is designed to never block the response — if mem0 fails, the
-error is logged but the agent's final answer is still returned.
+Memory persistence is non-blocking — if Pinecone or embedding fails, the error
+is logged safely without breaking the user response.
 """
 
 from __future__ import annotations
@@ -27,21 +26,24 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.agent.memory import add_user_memory, add_store_memory
+from app.agent.memory import (
+    add_user_memory,
+    add_store_memory,
+    add_multi_store_memory,
+)
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.memory_write")
 
 
 async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
     """
-    Persist conversation context to mem0 long-term memory.
+    Persist conversation context to Pinecone multi-level long-term memory.
 
     Runs after the agent has completed its final answer.
     Failures are non-fatal — they are logged but don't affect the response.
 
-    The node checks ``should_persist_memory`` flag set by the think node.
-    If False (trivial conversation like "hi"), the node returns immediately
-    without calling mem0.
+    Checks ``should_persist_memory`` flag set by the think node.
+    If False (trivial conversation like "hi"), the node returns immediately.
     """
     # Skip if the think node determined this conversation is not worth persisting
     if not state.get("should_persist_memory", False):
@@ -53,6 +55,7 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
 
     store_id = state.get("store_id", "unknown")
     user_id = state.get("user_id", "unknown")
+    store_ids = state.get("store_ids", [store_id]) if isinstance(state.get("store_ids"), list) else [store_id]
     user_prompt = state.get("user_prompt", "")
     final_answer = state.get("final_answer", "")
 
@@ -71,24 +74,28 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
         return {}
 
     LOGGER.info(
-        "memory_write_start",
+        "pinecone_memory_write_start",
         store_id=store_id,
         user_id=user_id,
         message_count=len(messages),
     )
 
-    # Store at user level (preferences, tone, language, etc.)
+    # 1. Store at USER level (preferences, tone, language, detail, etc.)
     user_ok = await add_user_memory(user_id, messages)
 
-    # Store at store level (patterns, decisions, store knowledge)
+    # 2. Store at STORE level (store domain facts, restock patterns, decisions)
     store_ok = await add_store_memory(store_id, messages)
 
+    # 3. Store at MULTI-STORE level (cross-store chain strategies, transfer rules)
+    multi_store_ok = await add_multi_store_memory(user_id, store_ids, messages)
+
     LOGGER.info(
-        "memory_write_complete",
+        "pinecone_memory_write_complete",
         store_id=store_id,
         user_id=user_id,
         user_ok=user_ok,
         store_ok=store_ok,
+        multi_store_ok=multi_store_ok,
     )
 
     return {}

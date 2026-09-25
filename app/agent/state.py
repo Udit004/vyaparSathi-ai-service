@@ -446,14 +446,13 @@ class VyaparAgentState(TypedDict):
 
     store_knowledge: dict[str, Any]
     """
-    Store-specific knowledge fetched from mem0 (store memory store,
+    Store-specific knowledge fetched from Pinecone (store memory store,
     namespace = store_id — each store is fully isolated).
+    """
 
-    Built up over multiple sessions as the agent learns about the store:
-        top_categories     -> most frequent product categories
-        seasonal_patterns  -> e.g., "rice sells 3x in Oct-Nov"
-        past_decisions     -> past restock/action summaries
-        store_name         -> human-readable store name
+    multi_store_knowledge: dict[str, Any]
+    """
+    Multi-store enterprise knowledge fetched from Pinecone (scoped by user_id + store_ids).
     """
 
     # ──────────────────────────────────────────────────────────────────────
@@ -691,6 +690,7 @@ def make_initial_state(
         # 6. Memory — not loaded yet
         user_memory_loaded=False,
         store_memory_loaded=False,
+        multi_store_memory_loaded=False,
         memory_query_needed=False,
         intent="general",
         intent_reason="",
@@ -698,6 +698,7 @@ def make_initial_state(
         plan={},
         user_preferences={},
         store_knowledge={},
+        multi_store_knowledge={},
         # 7. Output — empty until respond node runs
         final_answer="",
         response_metadata={},

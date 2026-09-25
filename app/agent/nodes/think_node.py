@@ -126,15 +126,20 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     # Inject memory context if available
     user_prefs = state.get("user_preferences", {})
     store_knowledge = state.get("store_knowledge", {})
+    multi_store_knowledge = state.get("multi_store_knowledge", {})
+
     user_mem_summary = user_prefs.get("summary", "") if isinstance(user_prefs, dict) else ""
     store_mem_summary = store_knowledge.get("summary", "") if isinstance(store_knowledge, dict) else ""
+    multi_store_mem_summary = multi_store_knowledge.get("summary", "") if isinstance(multi_store_knowledge, dict) else ""
 
-    if user_mem_summary or store_mem_summary:
+    if user_mem_summary or store_mem_summary or multi_store_mem_summary:
         sys_content += "Long-term memory context:\n"
         if user_mem_summary:
             sys_content += f"<user_preferences>\n{user_mem_summary}\n</user_preferences>\n\n"
         if store_mem_summary:
             sys_content += f"<store_knowledge>\n{store_mem_summary}\n</store_knowledge>\n\n"
+        if multi_store_mem_summary:
+            sys_content += f"<multi_store_knowledge>\n{multi_store_mem_summary}\n</multi_store_knowledge>\n\n"
         # CRITICAL: memory is preferences / store knowledge ONLY.
         # It is NOT a substitute for live tool data. Any question about
         # inventory, sales, forecasts, restock, or insights MUST call the

@@ -43,7 +43,7 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.summarizer")
 # Each value is (base_url, model). Kept identical to app/lib/grader.py so the
 # lightweight stack uses one consistent set of fast models.
 _PROVIDER_CONFIG = {
-    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-20b"),
+    "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
     "nvidia": ("https://integrate.api.nvidia.com/v1", "nvidia/llama-3.1-8b-instruct"),
 }
 # Per-provider env var name for the API key

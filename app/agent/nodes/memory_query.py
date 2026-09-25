@@ -32,24 +32,23 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.agent.memory_query")
 
 async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     """
-    Conditionally fetch mem0 long-term memory for user + store.
+    Fetch Pinecone long-term memory for user + store.
 
-    Only runs if ``memory_query_needed`` is True and memory hasn't
-    been loaded yet for this session.
+    Runs on every conversation loop so the agent always has full context
+    of user preferences (language, detail level, format) and store domain facts.
     """
     store_id = state.get("store_id", "unknown")
     user_id = state.get("user_id", "unknown")
-    needs_query = state.get("memory_query_needed", False)
     already_loaded = (
         state.get("user_memory_loaded", False)
         and state.get("store_memory_loaded", False)
+        and state.get("multi_store_memory_loaded", False)
     )
 
-    if not needs_query or already_loaded:
+    if already_loaded:
         LOGGER.debug(
             "memory_query_skip",
             store_id=store_id,
-            needs_query=needs_query,
             already_loaded=already_loaded,
         )
         return {"memory_query_needed": False}
@@ -65,25 +64,8 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
         state.get("user_prompt", ""),
     )
 
-    intent = state.get("intent", "general")
-    needs_memory_intent = intent in {"memory", "mixed"}
-    if not needs_memory_intent and not should_retrieve_memory(user_prompt):
-        LOGGER.info(
-            "memory_query_not_needed",
-            store_id=store_id,
-            intent=intent,
-            reason="request is answered by live tools or recent conversation",
-        )
-        return {
-            "user_memory_loaded": True,
-            "store_memory_loaded": True,
-            "memory_query_needed": False,
-            "user_preferences": {"raw": [], "summary": ""},
-            "store_knowledge": {"raw": [], "summary": ""},
-        }
-
     try:
-        user_prefs, store_knowledge = await load_memory_context(
+        user_prefs, store_knowledge, multi_store_knowledge = await load_memory_context(
             user_id=user_id,
             store_id=store_id,
             user_prompt=user_prompt,
@@ -105,12 +87,15 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
         store_id=store_id,
         user_results=len(user_prefs.get("raw", [])),
         store_results=len(store_knowledge.get("raw", [])),
+        multi_store_results=len(multi_store_knowledge.get("raw", [])),
     )
 
     return {
         "user_memory_loaded": True,
         "store_memory_loaded": True,
+        "multi_store_memory_loaded": True,
         "memory_query_needed": False,
         "user_preferences": user_prefs,
         "store_knowledge": store_knowledge,
+        "multi_store_knowledge": multi_store_knowledge,
     }

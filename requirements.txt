@@ -27,6 +27,10 @@ openai>=1.0.0
 # Forecasting model runtime
 catboost==1.2.8
 
+# Vector Database (Pinecone)
+pinecone-client
+langchain-pinecone
+
 # Observability
 prometheus-client==0.19.0
 structlog==24.1.0

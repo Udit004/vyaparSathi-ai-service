@@ -33,14 +33,15 @@ from app.config.settings import get_settings
 LOGGER = structlog.get_logger("vyaparsathi.ai.llm")
 
 
-def _build_gemini(model: str, **kwargs) -> Any:
+def _build_gemini(model: str, *, api_key: str | None = None, **kwargs) -> Any:
     """Build a ChatGoogleGenerativeAI instance for the given model."""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     settings = get_settings()
+    key = api_key or settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
     return ChatGoogleGenerativeAI(
         model=model,
-        google_api_key=settings.gemini_api_key,
+        google_api_key=key,
         temperature=0.3,
         max_retries=0,
     )
@@ -186,33 +187,60 @@ def get_llm():
     """
     Return the fallback LLM chain, or None if no provider is configured.
 
-    The chain is built once and cached. Members that fail to construct
-    (e.g. missing API key) are silently skipped.
+    Iterates through all configured Gemini keys and other providers.
     """
+    from app.lib.gemini_keys import get_gemini_api_keys
+    gemini_keys = get_gemini_api_keys()
+
     members: list[Any] = []
     names: list[str] = []
     for provider_name, model, build_fn, env_var in _PROVIDERS:
-        api_key = _provider_env(provider_name, env_var)
-        if not api_key:
-            LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
-            continue
-        try:
-            llm = build_fn(model, api_key=api_key)
-            members.append(llm)
-            names.append(f"{provider_name}/{model}")
-            LOGGER.info(
-                "llm_provider_ready",
-                provider=provider_name,
-                model=model,
-                position=len(members),
-            )
-        except Exception as exc:
-            LOGGER.warning(
-                "llm_provider_init_failed",
-                provider=provider_name,
-                model=model,
-                error=str(exc)[:200],
-            )
+        if provider_name == "gemini":
+            if not gemini_keys:
+                continue
+            for idx, g_key in enumerate(gemini_keys, 1):
+                try:
+                    llm = _build_gemini(model, api_key=g_key)
+                    members.append(llm)
+                    key_tag = f"key_{idx}"
+                    names.append(f"{provider_name}/{model} ({key_tag})")
+                    LOGGER.info(
+                        "llm_provider_ready",
+                        provider=provider_name,
+                        model=model,
+                        key_index=idx,
+                        position=len(members),
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "llm_provider_init_failed",
+                        provider=provider_name,
+                        model=model,
+                        key_index=idx,
+                        error=str(exc)[:200],
+                    )
+        else:
+            api_key = _provider_env(provider_name, env_var)
+            if not api_key:
+                LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
+                continue
+            try:
+                llm = build_fn(model, api_key=api_key)
+                members.append(llm)
+                names.append(f"{provider_name}/{model}")
+                LOGGER.info(
+                    "llm_provider_ready",
+                    provider=provider_name,
+                    model=model,
+                    position=len(members),
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "llm_provider_init_failed",
+                    provider=provider_name,
+                    model=model,
+                    error=str(exc)[:200],
+                )
 
     if not members:
         LOGGER.error("llm_no_provider_configured")

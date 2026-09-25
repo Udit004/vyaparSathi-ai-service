@@ -1,6 +1,9 @@
 from functools import lru_cache
+from dotenv import load_dotenv
 
 from pydantic_settings import BaseSettings
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -18,6 +21,14 @@ class Settings(BaseSettings):
     # Small/fast summarizer providers (OpenAI-compatible endpoints)
     groq_api_key: str | None = None
     nvidia_api_key: str | None = None
+    # Vector database (Pinecone)
+    pinecone_api_key: str | None = None
+    pincone_api_key: str | None = None
+    pinecone_index_name: str = "vyapar-sathi"
+
+    @property
+    def effective_pinecone_api_key(self) -> str | None:
+        return self.pinecone_api_key or self.pincone_api_key
 
     class Config:
         env_file = ".env"

@@ -95,8 +95,8 @@ def filter_candidates(
 
         # days_to_stockout_max filter
         dts = c.get("days_to_stockout", None)
-        if days_to_stockout_max is not None and dts is not None:
-            if dts > days_to_stockout_max:
+        if days_to_stockout_max is not None:
+            if dts is None or dts > days_to_stockout_max:
                 continue
 
         # category filter
