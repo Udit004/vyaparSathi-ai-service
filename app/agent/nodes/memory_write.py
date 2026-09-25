@@ -80,14 +80,11 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
         message_count=len(messages),
     )
 
-    # 1. Store at USER level (preferences, tone, language, detail, etc.)
-    user_ok = await add_user_memory(user_id, messages)
+    # Store at user level (preferences, tone, language, etc.)
+    user_ok = await add_user_memory(user_id, messages, curated_messages=messages)
 
-    # 2. Store at STORE level (store domain facts, restock patterns, decisions)
-    store_ok = await add_store_memory(store_id, messages)
-
-    # 3. Store at MULTI-STORE level (cross-store chain strategies, transfer rules)
-    multi_store_ok = await add_multi_store_memory(user_id, store_ids, messages)
+    # Store at store level (patterns, decisions, store knowledge)
+    store_ok = await add_store_memory(store_id, messages, curated_messages=messages)
 
     LOGGER.info(
         "pinecone_memory_write_complete",

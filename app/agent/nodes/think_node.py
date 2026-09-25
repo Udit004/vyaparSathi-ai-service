@@ -337,8 +337,15 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
                 "should_persist_memory": should_persist,
             }
 
+        # Route to critic for complex tasks, or tasks that used multiple tools/loops
+        is_complex = state.get("requires_planning", False) or len(tools_used) > 1 or loop > 1
+        
+        # If the user explicitly provided a complex query or the agent had to use tools, review it
+        # (We skip review for 0-tool conversations or 1-tool simple lookups to save latency)
+        next_status = "review" if is_complex and not is_final_loop else "complete"
+
         return {
-            "goal_status": "complete",
+            "goal_status": next_status,
             "goal": current_goal,
             "messages": [response],
             "final_answer": final_text,
@@ -346,7 +353,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             "response_metadata": {
                 "loops_taken": loop,
                 "tools_used": tools_used,
-                "goal_status": "complete",
+                "goal_status": next_status,
                 "goal": current_goal,
                 "forced_stop": is_final_loop,
                 "memory_loaded": {
