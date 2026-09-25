@@ -26,11 +26,7 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.agent.memory import (
-    add_user_memory,
-    add_store_memory,
-    add_multi_store_memory,
-)
+from app.agent.memory import process_and_persist_memory
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.memory_write")
 
@@ -80,22 +76,20 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
         message_count=len(messages),
     )
 
-    # Store at user level (preferences, tone, language, etc.)
-    user_ok = await add_user_memory(user_id, messages, curated_messages=messages)
-
-    # Store at store level (patterns, decisions, store knowledge)
-    store_ok = await add_store_memory(store_id, messages, curated_messages=messages)
-
-    # Store at multi-store level (cross-store insights)
-    multi_store_ok = await add_multi_store_memory(user_id, store_ids, messages, curated_messages=messages)
+    res = await process_and_persist_memory(
+        user_id=user_id,
+        store_id=store_id,
+        messages=messages,
+        store_ids=store_ids,
+    )
 
     LOGGER.info(
         "pinecone_memory_write_complete",
         store_id=store_id,
         user_id=user_id,
-        user_ok=user_ok,
-        store_ok=store_ok,
-        multi_store_ok=multi_store_ok,
+        user_ok=res.get("user_ok", True),
+        store_ok=res.get("store_ok", True),
+        multi_store_ok=res.get("multi_store_ok", True),
     )
 
     return {}
