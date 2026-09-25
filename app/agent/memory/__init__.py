@@ -35,15 +35,23 @@ from app.agent.memory.retriever import (
     curate_memory_messages,
     extract_multi_level_memory,
 
+    # Memory level constants
+    TYPE_USER_PREFERENCE,
+    TYPE_STORE_MEMORY,
+    TYPE_MULTI_STORE_MEMORY,
+
     # Diagnostics / health
     get_memory_client,
     is_enabled,
     get_memory_status,
 
-    # Private helpers re-exported so the bootstrap node can call them
+    # Private helpers re-exported so tests/nodes can call them
     _query_memory_vectors,
     _cap_results,
     _filter_relevant_results,
+    _reconcile_and_update_memory,
+    _upsert_memory_vector,
+    _delete_memory_vector,
 )
 
 __all__ = [
@@ -63,6 +71,10 @@ __all__ = [
     "add_multi_store_memory",
     "curate_memory_messages",
     "extract_multi_level_memory",
+    # Constants
+    "TYPE_USER_PREFERENCE",
+    "TYPE_STORE_MEMORY",
+    "TYPE_MULTI_STORE_MEMORY",
     # Diagnostics
     "get_memory_client",
     "is_enabled",
@@ -71,4 +83,7 @@ __all__ = [
     "_query_memory_vectors",
     "_cap_results",
     "_filter_relevant_results",
+    "_reconcile_and_update_memory",
+    "_upsert_memory_vector",
+    "_delete_memory_vector",
 ]

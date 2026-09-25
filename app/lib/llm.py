@@ -1,34 +1,30 @@
 """
 app/lib/llm.py
 ==============
-LLM factory with automatic provider fallback.
+LLM factory with automatic provider and multi-key fallback.
 
-Gemini's free tier is capped at 20 requests/day per model, so a single
-rate-limit error can take the whole agent down. This module builds a
-fallback chain that transparently tries the next provider when the
-current one is exhausted.
+Provides a unified LLM interface with multi-provider, multi-key fallback ordering:
+    1. Gemini models (gemini-2.5-flash)
+    2. Groq models (llama-3.3-70b-versatile, llama-3.1-8b-instant)
+    3. OpenRouter free models (meta-llama/llama-3.3-70b-instruct:free, google/gemma-2-9b-it:free)
+    4. NVIDIA NIM models (nvidia/llama-3.1-8b-instruct)
+    5. Ollama local models (if OLLAMA_BASE_URL is configured or running locally)
 
-Fallback order:
-    1. gemini-2.5-flash          (primary reasoning — best quality)
-    2. openai/gpt-oss-120b       (GROQ — large, high-capability reasoning model)
-    3. openai/gpt-oss-20b        (GROQ — lightweight fallback, requires openai/ prefix)
-    4. gemini-2.5-flash-lite     (Gemini cheap fallback, rate-limited)
-    5. nvidia/llama-3.1-8b-instruct (NVIDIA — fast, cheap fallback)
-
-The returned object behaves like a single chat model: ``ainvoke`` and
-``bind_tools`` both work, and tool calls are propagated to every member
-of the chain.
+The returned ``_FallbackLLM`` object behaves like a single chat model:
+``ainvoke``, ``invoke``, ``bind_tools``, ``with_structured_output``, and ``with_config``
+all work transparently across every member in the fallback chain.
 """
 
 from __future__ import annotations
 
 import os
-from functools import lru_cache, partial
-from typing import Any
+from functools import partial
+from typing import Any, Callable
 
 import structlog
 
 from app.config.settings import get_settings
+from app.lib.gemini_keys import get_provider_keys
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.llm")
 
@@ -47,21 +43,24 @@ def _build_gemini(model: str, *, api_key: str | None = None, **kwargs) -> Any:
     )
 
 
-def _build_openai(model: str, *, base_url: str, api_key: str) -> Any:
+def _build_openai(model: str, *, base_url: str, api_key: str, default_headers: dict | None = None) -> Any:
     """
     Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint.
-
-    ``base_url`` is required for non-OpenAI providers (GROQ, NVIDIA) because
-    without it ChatOpenAI defaults to ``https://api.openai.com/v1`` and the
-    provider-specific model names (e.g. ``nvidia/llama-3.1-8b-instruct``)
-    cannot be resolved. Each fallback entry in ``_PROVIDERS`` binds the
-    correct ``base_url`` via ``functools.partial``.
-
-    ``api_key`` is the provider-specific API key (GROQ_API_KEY or NVIDIA_API_KEY)
-    passed explicitly so ChatOpenAI does not rely on the generic
-    ``OPENAI_API_KEY`` environment variable.
     """
     from langchain_openai import ChatOpenAI
+    import httpx
+
+    extra_kwargs: dict[str, Any] = {}
+    try:
+        # Create an AsyncClient on the current event loop if one is running
+        loop = asyncio.get_running_loop()
+        if loop and loop.is_running():
+            extra_kwargs["http_async_client"] = httpx.AsyncClient(timeout=30.0)
+    except Exception:
+        pass
+
+    if default_headers:
+        extra_kwargs["default_headers"] = default_headers
 
     return ChatOpenAI(
         model=model,
@@ -69,49 +68,42 @@ def _build_openai(model: str, *, base_url: str, api_key: str) -> Any:
         api_key=api_key,
         temperature=0.3,
         max_retries=0,
+        **extra_kwargs,
     )
 
 
-def _provider_env(provider_name: str, env_var: str) -> str | None:
-    """Return the API key for a provider, preferring settings then env."""
-    settings = get_settings()
-    if provider_name == "gemini":
-        return settings.gemini_api_key or os.environ.get(env_var)
-    if provider_name == "nvidia":
-        return settings.nvidia_api_key or os.environ.get(env_var)
-    if provider_name == "groq":
-        return settings.groq_api_key or os.environ.get(env_var)
-    return os.environ.get(env_var)
+def _build_ollama(model: str, *, base_url: str = "http://localhost:11434/v1", api_key: str = "ollama") -> Any:
+    """Build a ChatOpenAI instance targeting a local Ollama server."""
+    return _build_openai(model, base_url=base_url, api_key=api_key or "ollama")
 
 
 # ---------------------------------------------------------------------------
 # Provider definitions
 # ---------------------------------------------------------------------------
 
-# OpenAI-compatible base URLs per provider. Bound into ``_build_openai`` via
-# ``functools.partial`` so each fallback entry targets the right endpoint.
 _OPENAI_BASE_URL = {
     "nvidia": "https://integrate.api.nvidia.com/v1",
     "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
 }
 
-# Each entry: (provider_name, model_id, build_fn, api_key_env)
-# The order here IS the fallback order.
-# Strategy:
-#   1. gemini-2.5-flash          — primary reasoning model (best quality)
-#   2. openai/gpt-oss-120b       — Groq large/powerful reasoning fallback (free tier, high rate limit)
-#   3. openai/gpt-oss-20b        — Groq lightweight fallback (MUST include openai/ prefix for Groq routing)
-#   4. gemini-2.5-flash-lite      — last resort (rate-limited, 20/day free tier)
-#   5. nvidia/llama-3.1-8b-instruct — NVIDIA fallback (fast, cheap)
-# NOTE: All Groq model IDs must include the "openai/" prefix when using the
-# Groq OpenAI-compatible endpoint — without it, ChatOpenAI routes to OpenAI's
-# servers and returns 404 (model not found).
 _PROVIDERS = [
-    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI_API_KEY"),
-    ("groq120b", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
-    ("groq20b", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ_API_KEY"),
-    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI_API_KEY"),
-    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA_API_KEY"),
+    # Tier 1: Gemini Primary Reasoning Models
+    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
+
+    # Tier 2: Groq High-Performance Free Tier Models
+    ("groq", "llama-3.3-70b-versatile", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "llama-3.1-8b-instant", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+
+    # Tier 3: OpenRouter Free Models
+    ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("openrouter", "google/gemma-2-9b-it:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+
+    # Tier 4: NVIDIA NIM Models
+    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+
+    # Tier 5: Ollama Local Fallback (if server is running)
+    ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
 
@@ -123,19 +115,21 @@ class _FallbackLLM:
     """
     A Runnable wrapper that tries each provider in order until one succeeds.
 
-    Rate-limit / quota errors (429) and connection errors trigger a fallthrough
-    to the next provider. The first successful response is returned.
+    Rate-limit / quota errors (429), API failures (400/404), and connection
+    errors trigger a fallthrough to the next provider. The first successful
+    response is returned.
     """
 
-    def __init__(self, members: list[Any], names: list[str]):
+    def __init__(self, members: list[Any], names: list[str], builders: list[Callable[[], Any]] | None = None):
         self._members = members
         self._names = names
+        self._builders = builders or [lambda m=m: m for m in members]
 
     # -- LangChain Runnable interface ---------------------------------------
 
     def invoke(self, input, config=None, **kwargs):
         last_error = None
-        for member, name in zip(self._members, self._names):
+        for idx, (member, name) in enumerate(zip(self._members, self._names)):
             try:
                 LOGGER.debug("llm_fallback_try", provider=name)
                 return member.invoke(input, config=config, **kwargs)
@@ -150,12 +144,19 @@ class _FallbackLLM:
 
     async def ainvoke(self, input, config=None, **kwargs):
         last_error = None
-        for member, name in zip(self._members, self._names):
+        for idx, (member, name) in enumerate(zip(self._members, self._names)):
             try:
                 LOGGER.debug("llm_fallback_try", provider=name)
                 return await member.ainvoke(input, config=config, **kwargs)
             except Exception as exc:
                 last_error = exc
+                err_msg = str(exc).lower()
+                if "event loop" in err_msg or "closed" in err_msg:
+                    try:
+                        fresh_member = self._builders[idx]()
+                        return await fresh_member.ainvoke(input, config=config, **kwargs)
+                    except Exception as exc2:
+                        last_error = exc2
                 LOGGER.warning(
                     "llm_fallback_member_failed",
                     provider=name,
@@ -166,14 +167,61 @@ class _FallbackLLM:
     def bind_tools(self, tools, **kwargs):
         """Bind tools to every member of the fallback chain."""
         new_members = []
-        for member in self._members:
+        new_names = []
+        new_builders = []
+        for member, name, builder in zip(self._members, self._names, self._builders):
             try:
-                new_members.append(member.bind_tools(tools, **kwargs))
-            except Exception:
+                bound = member.bind_tools(tools, **kwargs)
+                new_members.append(bound)
+                new_names.append(name)
+                new_builders.append(lambda b=builder, t=tools, kw=kwargs: b().bind_tools(t, **kw))
+            except Exception as exc:
+                LOGGER.warning("llm_bind_tools_member_failed", provider=name, error=str(exc)[:200])
                 new_members.append(member)
-        return _FallbackLLM(new_members, list(self._names))
+                new_names.append(name)
+                new_builders.append(builder)
+        return _FallbackLLM(new_members, new_names, new_builders)
 
-    # Pass through any other attribute to the first member (for compatibility)
+    def with_structured_output(self, schema: Any, **kwargs) -> _FallbackLLM:
+        """Bind structured output schema to every member of the fallback chain."""
+        new_members = []
+        new_names = []
+        new_builders = []
+        for member, name, builder in zip(self._members, self._names, self._builders):
+            try:
+                structured_member = member.with_structured_output(schema, **kwargs)
+                new_members.append(structured_member)
+                new_names.append(name)
+                new_builders.append(lambda b=builder, s=schema, kw=kwargs: b().with_structured_output(s, **kw))
+            except Exception as exc:
+                LOGGER.warning(
+                    "llm_with_structured_output_member_failed",
+                    provider=name,
+                    error=str(exc)[:200],
+                )
+        if not new_members:
+            LOGGER.error("llm_with_structured_output_no_supported_members")
+            raise RuntimeError("No configured LLM member supports structured output for this schema.")
+        return _FallbackLLM(new_members, new_names, new_builders)
+
+    def with_config(self, config: dict | None = None, **kwargs) -> _FallbackLLM:
+        """Apply Runnable config (e.g. callbacks=[]) to every member of the fallback chain."""
+        new_members = []
+        new_builders = []
+        for member, builder in zip(self._members, self._builders):
+            if hasattr(member, "with_config"):
+                try:
+                    conf = member.with_config(config, **kwargs)
+                    new_members.append(conf)
+                    new_builders.append(lambda b=builder, c=config, kw=kwargs: b().with_config(c, **kw))
+                except Exception:
+                    new_members.append(member)
+                    new_builders.append(builder)
+            else:
+                new_members.append(member)
+                new_builders.append(builder)
+        return _FallbackLLM(new_members, list(self._names), new_builders)
+
     def __getattr__(self, item):
         return getattr(self._members[0], item)
 
@@ -182,56 +230,55 @@ class _FallbackLLM:
 # Public factory
 # ---------------------------------------------------------------------------
 
-@lru_cache()
-def get_llm():
+def get_llm() -> _FallbackLLM | None:
     """
     Return the fallback LLM chain, or None if no provider is configured.
 
-    Iterates through all configured Gemini keys and other providers.
+    Iterates through all configured Gemini, Groq, OpenRouter, NVIDIA, and Ollama keys.
     """
-    from app.lib.gemini_keys import get_gemini_api_keys
-    gemini_keys = get_gemini_api_keys()
-
     members: list[Any] = []
     names: list[str] = []
-    for provider_name, model, build_fn, env_var in _PROVIDERS:
-        if provider_name == "gemini":
-            if not gemini_keys:
-                continue
-            for idx, g_key in enumerate(gemini_keys, 1):
-                try:
-                    llm = _build_gemini(model, api_key=g_key)
-                    members.append(llm)
-                    key_tag = f"key_{idx}"
-                    names.append(f"{provider_name}/{model} ({key_tag})")
-                    LOGGER.info(
-                        "llm_provider_ready",
-                        provider=provider_name,
-                        model=model,
-                        key_index=idx,
-                        position=len(members),
-                    )
-                except Exception as exc:
-                    LOGGER.warning(
-                        "llm_provider_init_failed",
-                        provider=provider_name,
-                        model=model,
-                        key_index=idx,
-                        error=str(exc)[:200],
-                    )
-        else:
-            api_key = _provider_env(provider_name, env_var)
-            if not api_key:
-                LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
+    builders: list[Callable[[], Any]] = []
+
+    for provider_name, model, build_fn, provider_prefix in _PROVIDERS:
+        if provider_name == "ollama":
+            settings = get_settings()
+            base_url = settings.ollama_base_url or os.getenv("OLLAMA_BASE_URL")
+            if not base_url:
                 continue
             try:
-                llm = build_fn(model, api_key=api_key)
+                b_fn = partial(build_fn, model, base_url=base_url)
+                llm = b_fn()
                 members.append(llm)
-                names.append(f"{provider_name}/{model}")
+                builders.append(b_fn)
+                names.append(f"ollama/{model}")
+                LOGGER.info("llm_provider_ready", provider="ollama", model=model, position=len(members))
+            except Exception as exc:
+                LOGGER.warning("llm_provider_init_failed", provider="ollama", model=model, error=str(exc)[:200])
+            continue
+
+        keys = get_provider_keys(provider_prefix)
+        if not keys:
+            LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
+            continue
+
+        for idx, key in enumerate(keys, 1):
+            try:
+                if provider_name == "gemini":
+                    b_fn = partial(_build_gemini, model, api_key=key)
+                else:
+                    b_fn = partial(build_fn, model, api_key=key)
+
+                llm = b_fn()
+                members.append(llm)
+                builders.append(b_fn)
+                key_tag = f"key_{idx}"
+                names.append(f"{provider_name}/{model} ({key_tag})")
                 LOGGER.info(
                     "llm_provider_ready",
                     provider=provider_name,
                     model=model,
+                    key_index=idx,
                     position=len(members),
                 )
             except Exception as exc:
@@ -239,6 +286,7 @@ def get_llm():
                     "llm_provider_init_failed",
                     provider=provider_name,
                     model=model,
+                    key_index=idx,
                     error=str(exc)[:200],
                 )
 
@@ -247,19 +295,26 @@ def get_llm():
         return None
 
     LOGGER.info("llm_fallback_chain_built", members=names)
-    return _FallbackLLM(members, names)
+    return _FallbackLLM(members, names, builders)
+
+
+def clear_llm_cache():
+    """No-op kept for backwards compatibility."""
+    pass
 
 
 def get_llm_status() -> dict:
-    """Return diagnostic info about which providers are available."""
+    """Return diagnostic info about which providers and keys are available."""
     available = []
-    for provider_name, model, _build_fn, env_var in _PROVIDERS:
-        api_key = _provider_env(provider_name, env_var)
+    for provider_name, model, _build_fn, provider_prefix in _PROVIDERS:
+        keys = get_provider_keys(provider_prefix) if provider_name != "ollama" else [os.getenv("OLLAMA_BASE_URL", "")]
+        keys = [k for k in keys if k]
         available.append(
             {
                 "provider": provider_name,
                 "model": model,
-                "configured": bool(api_key),
+                "configured": bool(keys),
+                "key_count": len(keys),
             }
         )
     return {

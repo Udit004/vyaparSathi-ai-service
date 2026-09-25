@@ -28,36 +28,50 @@ _cooldowns: dict[str, float] = {}  # key -> timestamp until on cooldown
 _COOLDOWN_DURATION_SECONDS = 60.0  # 1-minute cooldown for rate-limited key
 
 
+def get_provider_keys(provider_prefix: str) -> list[str]:
+    """
+    Collect all available API keys for a given provider (e.g. GEMINI, GROQ, NVIDIA, OPENROUTER).
+    Supports:
+    1. Comma-separated keys in {PREFIX}_API_KEYS.
+    2. Settings attribute (e.g. settings.groq_api_key).
+    3. Standard {PREFIX}_API_KEY.
+    4. Numbered env vars with and without underscore: {PREFIX}_API_KEY_1, {PREFIX}_API_KEY1, etc.
+    De-duplicates and preserves order.
+    """
+    prefix = provider_prefix.upper().rstrip("_")
+    keys: list[str] = []
+    settings = get_settings()
+
+    raw_keys_sources = [
+        os.environ.get(f"{prefix}_API_KEYS", ""),
+        getattr(settings, f"{prefix.lower()}_api_key", "") or "",
+        os.environ.get(f"{prefix}_API_KEY", ""),
+    ]
+
+    for raw in raw_keys_sources:
+        if raw:
+            for part in str(raw).split(","):
+                cleaned = part.strip()
+                if cleaned and cleaned not in keys:
+                    keys.append(cleaned)
+
+    # Check numbered keys: PREFIX_API_KEY_1, PREFIX_API_KEY1, PREFIX_API_KEY_2, PREFIX_API_KEY2...
+    for i in range(1, 10):
+        for pattern in (f"{prefix}_API_KEY_{i}", f"{prefix}_API_KEY{i}"):
+            val = os.environ.get(pattern, "").strip()
+            if val and val not in keys:
+                keys.append(val)
+
+    return keys
+
+
 def get_gemini_api_keys() -> list[str]:
     """
     Collect all available Gemini API keys from settings and environment.
     De-duplicates and preserves order.
     """
-    keys: list[str] = []
+    return get_provider_keys("GEMINI")
 
-    settings = get_settings()
-
-    # 1. Check comma-separated GEMINI_API_KEYS or settings.gemini_api_key
-    raw_keys_sources = [
-        os.environ.get("GEMINI_API_KEYS", ""),
-        getattr(settings, "gemini_api_key", "") or "",
-        os.environ.get("GEMINI_API_KEY", ""),
-    ]
-
-    for raw in raw_keys_sources:
-        if raw:
-            for part in raw.split(","):
-                cleaned = part.strip()
-                if cleaned and cleaned not in keys:
-                    keys.append(cleaned)
-
-    # 2. Check numbered keys: GEMINI_API_KEY_1, GEMINI_API_KEY_2, ...
-    for i in range(1, 10):
-        val = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
-        if val and val not in keys:
-            keys.append(val)
-
-    return keys
 
 
 def get_next_gemini_key() -> str | None:

@@ -117,56 +117,42 @@ async def summarize(
     provider: str | None = None,
 ) -> str:
     """
-    Summarize ``text`` using a small/fast model.
+    Summarize ``text`` using the multi-provider LLM fallback chain.
 
     Args:
         text: The raw text to compress. Non-string values (lists, dicts,
             None) are flattened to a string before use.
         instruction: Task instruction (e.g. "Summarize this inventory report").
         max_tokens: Maximum tokens for the summary.
-        provider: Force a specific provider ("groq"|"nvidia"); auto-detect if None.
+        provider: Legacy optional provider param.
 
     Returns:
         A compressed summary string. Falls back to truncation if no
-        provider is available or the call fails.
+        provider is available or all LLMs fail.
     """
     text = _flatten_text(text)
     if not text or not text.strip():
         return ""
 
-    provider = provider or _available_provider()
-    client = _get_client(provider) if provider else None
+    from app.lib.llm import get_llm
+    llm = get_llm()
+    if llm is not None:
+        try:
+            response = await llm.ainvoke(
+                [
+                    {"role": "system", "content": instruction},
+                    {"role": "user", "content": text},
+                ]
+            )
+            summary = response.content if hasattr(response, "content") else str(response)
+            if summary and isinstance(summary, str):
+                LOGGER.info("summarizer_success", in_chars=len(text), out_chars=len(summary))
+                return summary.strip()
+        except Exception as exc:
+            LOGGER.warning("summarizer_llm_failed", error=str(exc)[:200], fallback="truncation")
 
-    if client is None:
-        LOGGER.debug("summarizer_fallback_truncation", reason="no provider key", chars=len(text))
-        return _truncate(text, max_chars=max_tokens * 4)
-
-    _, model = _PROVIDER_CONFIG[provider]
-    try:
-        completion = await client.chat.completions.create(
-            **_create_kwargs(provider, model, max_tokens=max_tokens),
-            messages=[
-                {"role": "system", "content": instruction},
-                {"role": "user", "content": text},
-            ],
-        )
-        summary = completion.choices[0].message.content or ""
-        LOGGER.info(
-            "summarizer_success",
-            provider=provider,
-            model=model,
-            in_chars=len(text),
-            out_chars=len(summary),
-        )
-        return summary.strip()
-    except Exception as exc:
-        LOGGER.warning(
-            "summarizer_failed",
-            provider=provider,
-            error=str(exc),
-            fallback="truncation",
-        )
-        return _truncate(text, max_chars=max_tokens * 4)
+    LOGGER.debug("summarizer_fallback_truncation", reason="no LLM or execution error", chars=len(text))
+    return _truncate(text, max_chars=max_tokens * 4)
 
 
 def summarize_sync(

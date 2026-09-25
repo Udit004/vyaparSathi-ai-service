@@ -34,8 +34,8 @@ async def test_memory_status_returns_pinecone_info():
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory._reconcile_and_update_memory")
-@patch("app.agent.memory.curate_memory_messages")
+@patch("app.agent.memory.retriever._reconcile_and_update_memory")
+@patch("app.agent.memory.retriever.curate_memory_messages")
 async def test_add_user_memory(mock_curate, mock_reconcile):
     mock_curate.return_value = [{"role": "user", "content": "User prefers Hindi responses."}]
     mock_reconcile.return_value = True
@@ -53,8 +53,8 @@ async def test_add_user_memory(mock_curate, mock_reconcile):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory._reconcile_and_update_memory")
-@patch("app.agent.memory.curate_memory_messages")
+@patch("app.agent.memory.retriever._reconcile_and_update_memory")
+@patch("app.agent.memory.retriever.curate_memory_messages")
 async def test_add_store_memory(mock_curate, mock_reconcile):
     mock_curate.return_value = [{"role": "user", "content": "Rice restock lead time is 2 days."}]
     mock_reconcile.return_value = True
@@ -72,8 +72,8 @@ async def test_add_store_memory(mock_curate, mock_reconcile):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory._reconcile_and_update_memory")
-@patch("app.agent.memory.curate_memory_messages")
+@patch("app.agent.memory.retriever._reconcile_and_update_memory")
+@patch("app.agent.memory.retriever.curate_memory_messages")
 async def test_add_multi_store_memory(mock_curate, mock_reconcile):
     mock_curate.return_value = [{"role": "user", "content": "Cross-store inventory transfer strategy enabled."}]
     mock_reconcile.return_value = True
@@ -91,7 +91,7 @@ async def test_add_multi_store_memory(mock_curate, mock_reconcile):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory._query_memory_vectors")
+@patch("app.agent.memory.retriever._query_memory_vectors")
 async def test_search_memories(mock_query):
     mock_query.return_value = [
         {"id": "mem_1", "memory": "Prefers Hindi", "score": 0.88}
@@ -109,10 +109,10 @@ async def test_search_memories(mock_query):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory.search_user_memory")
-@patch("app.agent.memory.search_store_memory")
-@patch("app.agent.memory.search_multi_store_memory")
-@patch("app.agent.memory.build_memory_query")
+@patch("app.agent.memory.retriever.search_user_memory")
+@patch("app.agent.memory.retriever.search_store_memory")
+@patch("app.agent.memory.retriever.search_multi_store_memory")
+@patch("app.agent.memory.retriever.build_memory_query")
 async def test_load_memory_context(mock_build_q, mock_multi, mock_store, mock_user):
     mock_build_q.return_value = "inventory restock strategy"
     mock_user.return_value = [{"id": "m1", "memory": "User prefers brief format", "score": 0.9}]
@@ -163,10 +163,10 @@ async def test_memory_write_node(mock_process):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory._delete_memory_vector")
-@patch("app.agent.memory._upsert_memory_vector")
+@patch("app.agent.memory.retriever._delete_memory_vector")
+@patch("app.agent.memory.retriever._upsert_memory_vector")
 @patch("app.lib.llm.get_llm")
-@patch("app.agent.memory._query_memory_vectors")
+@patch("app.agent.memory.retriever._query_memory_vectors")
 async def test_reconcile_and_update_memory(mock_query, mock_get_llm, mock_upsert, mock_delete):
     from app.agent.memory import _reconcile_and_update_memory, TYPE_USER_PREFERENCE
 
@@ -218,26 +218,32 @@ async def test_extract_multi_level_memory(mock_get_llm):
 
 
 @pytest.mark.asyncio
-@patch("app.agent.memory.add_multi_store_memory")
-@patch("app.agent.memory.add_store_memory")
-@patch("app.agent.memory.add_user_memory")
-@patch("app.agent.memory.extract_multi_level_memory")
-async def test_process_and_persist_memory(mock_extract, mock_user, mock_store, mock_multi):
+@patch("app.agent.memory.service.write_new_memory")
+@patch("app.agent.memory.service.reconcile_memory")
+@patch("app.agent.memory.service.extract_memories")
+async def test_process_and_persist_memory(mock_extract, mock_reconcile, mock_write):
     from app.agent.memory import process_and_persist_memory
+    from app.agent.memory.models import ExtractedMemory
+    from app.agent.memory.conflict import ResolutionAction
 
-    mock_extract.return_value = {
-        "user_preferences": ["User prefers English"],
-        "store_knowledge": [],
-        "multi_store_knowledge": ["Transfer excess stock from warehouse"],
-    }
-    mock_user.return_value = True
-    mock_multi.return_value = True
+    mock_extract.return_value = [
+        ExtractedMemory(
+            memory_type="user_preference",
+            content="User prefers English",
+            subject="User",
+            source_role="user",
+            evidence="User requested English",
+            confidence=0.9,
+            importance=0.8,
+        )
+    ]
+    mock_reconcile.return_value = ResolutionAction(action="ADD", reason="New fact")
+    mock_write.return_value = True
 
     messages = [{"role": "user", "content": "Sample"}]
     res = await process_and_persist_memory(user_id="u1", store_id="s1", messages=messages)
 
-    assert res == {"user_ok": True, "store_ok": True, "multi_store_ok": True}
-    mock_user.assert_called_once()
-    mock_store.assert_not_called()
-    mock_multi.assert_called_once()
+    assert res["user_ok"] is True
+    mock_extract.assert_called_once()
+    mock_write.assert_called_once()
 

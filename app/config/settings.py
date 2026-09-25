@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # Small/fast summarizer providers (OpenAI-compatible endpoints)
     groq_api_key: str | None = None
     nvidia_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    ollama_base_url: str | None = None
     # Vector database (Pinecone)
     pinecone_api_key: str | None = None
     pincone_api_key: str | None = None
