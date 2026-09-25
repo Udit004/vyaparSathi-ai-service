@@ -86,6 +86,9 @@ async def memory_write_node(state: VyaparAgentState) -> Dict[str, Any]:
     # Store at store level (patterns, decisions, store knowledge)
     store_ok = await add_store_memory(store_id, messages, curated_messages=messages)
 
+    # Store at multi-store level (cross-store insights)
+    multi_store_ok = await add_multi_store_memory(user_id, store_ids, messages, curated_messages=messages)
+
     LOGGER.info(
         "pinecone_memory_write_complete",
         store_id=store_id,

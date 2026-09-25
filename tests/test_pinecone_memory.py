@@ -157,10 +157,18 @@ async def test_memory_write_node(mock_user, mock_store, mock_multi):
 
     mock_user.assert_called_once()
     mock_store.assert_called_once()
-    mock_multi.assert_called_once_with("user-101", ["store-202", "store-203"], [
-        {"role": "user", "content": "What are my restock options?"},
-        {"role": "assistant", "content": "Here are your urgent restock items..."},
-    ])
+    mock_multi.assert_called_once_with(
+        "user-101",
+        ["store-202", "store-203"],
+        [
+            {"role": "user", "content": "What are my restock options?"},
+            {"role": "assistant", "content": "Here are your urgent restock items..."},
+        ],
+        curated_messages=[
+            {"role": "user", "content": "What are my restock options?"},
+            {"role": "assistant", "content": "Here are your urgent restock items..."},
+        ],
+    )
 
 
 @pytest.mark.asyncio
