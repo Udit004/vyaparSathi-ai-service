@@ -1,20 +1,29 @@
 """
 app/agent/nodes/memory_query.py
 ================================
-Memory query node — conditionally fetches long-term memory from mem0.
+Bootstrap Memory Node — loads a small, focused amount of long-term memory
+context at the start of each agent run, before the think node executes.
 
-This node sits between the think node and the tool node in the agent loop.
-The think node sets ``memory_query_needed=True`` when it decides it needs
-more context from long-term memory. This node then:
+Architecture
+------------
+This node replaces the old "load everything" memory_query_node with
+intent-aware, budget-constrained retrieval:
 
-    1. Queries mem0 for user preferences (namespace = user_id)
-    2. Queries mem0 for store knowledge (namespace = store_id)
-    3. Stores results in ``user_preferences`` / ``store_knowledge``
-    4. Sets ``memory_query_needed=False`` to prevent re-querying
-    5. Sets ``user_memory_loaded`` / ``store_memory_loaded`` flags
+  intent=live_data   → minimal user prefs only (language/tone)
+  intent=memory      → user prefs + deep store/decision search
+  intent=mixed       → user prefs + store facts + patterns
+  intent=general     → user prefs + top store facts
+  intent=recap       → user prefs only (agent will scan messages)
 
-After this node runs, the agent loops back to think so the LLM can
-synthesize the memory context with any tool data it has.
+The node is designed to run ONCE per graph invocation (guarded by the
+already_loaded flag). The LLM can retrieve additional memories on-demand
+via the search_memory tool.
+
+What this node does NOT do
+--------------------------
+- It does NOT load all Pinecone memories into context.
+- It does NOT search episodic_event / decision memories by default.
+  Those are retrieved on-demand by the search_memory tool.
 """
 
 from __future__ import annotations
@@ -24,21 +33,73 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.agent.memory import load_memory_context, should_retrieve_memory
+from app.agent.memory import (
+    search_user_memory,
+    search_store_memory,
+    search_multi_store_memory,
+    build_memory_query,
+    summarize_memory_results,
+    _cap_results,
+    _filter_relevant_results,
+)
 from app.agent.utils import latest_human_prompt
 
-LOGGER = structlog.get_logger("vyaparsathi.ai.agent.memory_query")
+LOGGER = structlog.get_logger("vyaparsathi.ai.agent.bootstrap_memory")
+
+# Memory types fetched during bootstrap per intent
+_BOOTSTRAP_TYPES_BY_INTENT = {
+    "live_data": ["user_preference", "user_fact"],
+    "general": ["user_preference", "user_fact", "store_fact"],
+    "memory": ["user_preference", "user_fact", "store_fact", "store_pattern", "decision"],
+    "mixed": ["user_preference", "user_fact", "store_fact", "store_pattern"],
+    "conversation_recap": ["user_preference", "user_fact"],
+}
+
+# Maximum memories per scope for bootstrap (to keep context small)
+_BOOTSTRAP_CAP_USER = 3
+_BOOTSTRAP_CAP_STORE = 4
+_BOOTSTRAP_CAP_MULTI = 2
+
+
+async def _bootstrap_user_memory(user_id: str, query: str) -> list[dict]:
+    """Fetch stable user preferences/facts for bootstrap."""
+    results = await search_user_memory(user_id, query, top_k=_BOOTSTRAP_CAP_USER)
+    if not results:
+        # Fallback to a general preference query
+        results = await search_user_memory(
+            user_id,
+            "user preference language tone detail level business goals",
+            top_k=_BOOTSTRAP_CAP_USER,
+        )
+    return _cap_results(results)[:_BOOTSTRAP_CAP_USER]
+
+
+async def _bootstrap_store_memory(store_id: str, query: str, intent: str) -> list[dict]:
+    """Fetch relevant store facts / patterns for bootstrap."""
+    results = await search_store_memory(store_id, query, top_k=_BOOTSTRAP_CAP_STORE)
+    if not results:
+        results = await search_store_memory(
+            store_id,
+            "store facts supplier rules restock schedule inventory patterns",
+            top_k=_BOOTSTRAP_CAP_STORE,
+        )
+    # Filter out low-relevance results for non-memory intents
+    if intent not in ("memory", "mixed"):
+        results = _filter_relevant_results(results)
+    return _cap_results(results)[:_BOOTSTRAP_CAP_STORE]
 
 
 async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     """
-    Fetch Pinecone long-term memory for user + store.
+    Bootstrap Memory Node.
 
-    Runs on every conversation loop so the agent always has full context
-    of user preferences (language, detail level, format) and store domain facts.
+    Loads a small, intent-aware set of long-term memories at graph start.
+    Runs once and is skipped on subsequent loops (already_loaded guard).
     """
     store_id = state.get("store_id", "unknown")
     user_id = state.get("user_id", "unknown")
+    intent = state.get("intent", "general")
+
     already_loaded = (
         state.get("user_memory_loaded", False)
         and state.get("store_memory_loaded", False)
@@ -46,17 +107,14 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     )
 
     if already_loaded:
-        LOGGER.debug(
-            "memory_query_skip",
-            store_id=store_id,
-            already_loaded=already_loaded,
-        )
+        LOGGER.debug("bootstrap_memory_skip", reason="already_loaded", store_id=store_id)
         return {"memory_query_needed": False}
 
     LOGGER.info(
-        "memory_query_start",
+        "bootstrap_memory_started",
         store_id=store_id,
         user_id=user_id,
+        intent=intent,
     )
 
     user_prompt = latest_human_prompt(
@@ -64,30 +122,53 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
         state.get("user_prompt", ""),
     )
 
+    # Build a focused semantic query from the user prompt
     try:
-        user_prefs, store_knowledge, multi_store_knowledge = await load_memory_context(
-            user_id=user_id,
-            store_id=store_id,
-            user_prompt=user_prompt,
-            current_goal=state.get("goal") or f"Answer the user's question: {user_prompt}",
+        memory_query = await build_memory_query(
+            user_prompt,
+            current_goal=state.get("goal") or user_prompt,
         )
+    except Exception:
+        memory_query = user_prompt[:200]
+
+    user_prefs_raw: list[dict] = []
+    store_knowledge_raw: list[dict] = []
+    multi_store_raw: list[dict] = []
+
+    # --- User memory: always load ---
+    try:
+        user_prefs_raw = await _bootstrap_user_memory(user_id, memory_query)
     except Exception as exc:
-        LOGGER.error(
-            "memory_query_failed",
-            store_id=store_id,
-            error=str(exc),
-        )
-        return {
-            "memory_query_needed": False,
-            "error": str(exc),
-        }
+        LOGGER.warning("bootstrap_user_memory_failed", error=str(exc))
+
+    # --- Store memory: skip for pure live_data intent ---
+    if intent != "live_data":
+        try:
+            store_knowledge_raw = await _bootstrap_store_memory(store_id, memory_query, intent)
+        except Exception as exc:
+            LOGGER.warning("bootstrap_store_memory_failed", error=str(exc))
+
+    # --- Multi-store memory: only for mixed/memory/general ---
+    if intent in ("memory", "mixed", "general"):
+        try:
+            multi_store_raw = _cap_results(
+                await search_multi_store_memory(user_id, memory_query, top_k=_BOOTSTRAP_CAP_MULTI)
+            )[:_BOOTSTRAP_CAP_MULTI]
+        except Exception as exc:
+            LOGGER.warning("bootstrap_multi_store_memory_failed", error=str(exc))
+
+    # Summarize for LLM context injection
+    user_prefs_summary = await summarize_memory_results(user_prefs_raw, memory_query)
+    store_knowledge_summary = await summarize_memory_results(store_knowledge_raw, memory_query)
+    multi_store_summary = await summarize_memory_results(multi_store_raw, memory_query)
 
     LOGGER.info(
-        "memory_query_complete",
+        "bootstrap_memory_completed",
         store_id=store_id,
-        user_results=len(user_prefs.get("raw", [])),
-        store_results=len(store_knowledge.get("raw", [])),
-        multi_store_results=len(multi_store_knowledge.get("raw", [])),
+        intent=intent,
+        user_memories=len(user_prefs_raw),
+        store_memories=len(store_knowledge_raw),
+        multi_store_memories=len(multi_store_raw),
     )
 
     return {
@@ -95,7 +176,19 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
         "store_memory_loaded": True,
         "multi_store_memory_loaded": True,
         "memory_query_needed": False,
-        "user_preferences": user_prefs,
-        "store_knowledge": store_knowledge,
-        "multi_store_knowledge": multi_store_knowledge,
+        "user_preferences": {
+            "raw": user_prefs_raw,
+            "summary": user_prefs_summary,
+            "source": "bootstrap",
+        },
+        "store_knowledge": {
+            "raw": store_knowledge_raw,
+            "summary": store_knowledge_summary,
+            "source": "bootstrap",
+        },
+        "multi_store_knowledge": {
+            "raw": multi_store_raw,
+            "summary": multi_store_summary,
+            "source": "bootstrap",
+        },
     }

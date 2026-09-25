@@ -57,7 +57,15 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
                 args["store_id"] = store_id
 
             LOGGER.debug("tool_node_invoking", tool_name=tool_name, args=args, loop=loop)
-            data = await tool.ainvoke(args)
+            # Pass user_id/store_id in configurable so search_memory can
+            # resolve identity securely without LLM providing it.
+            invoke_config = {
+                "configurable": {
+                    "user_id": state.get("user_id", ""),
+                    "store_id": store_id,
+                }
+            }
+            data = await tool.ainvoke(args, config=invoke_config)
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
             raw_data = data.model_dump() if hasattr(data, "model_dump") else data
@@ -98,6 +106,33 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
                 else:
                     ctx.append(raw_data)
                 updates["insights_context"] = ctx
+            elif tool_name == "search_memory":
+                # Accumulate retrieved memories; deduplicate by memory_id
+                from app.agent.tools.memory.search import MAX_MEMORY_SEARCH_CALLS
+                current_retrieved = list(state.get("retrieved_memories", []))
+                current_calls = int(state.get("memory_search_calls", 0))
+
+                if current_calls < MAX_MEMORY_SEARCH_CALLS:
+                    new_memories = raw_data.get("results", []) if isinstance(raw_data, dict) else []
+                    existing_ids = {m.get("memory_id", "") for m in current_retrieved if m.get("memory_id")}
+                    for mem in new_memories:
+                        mid = mem.get("memory_id", "")
+                        if not mid or mid not in existing_ids:
+                            current_retrieved.append(mem)
+                            if mid:
+                                existing_ids.add(mid)
+                    updates["retrieved_memories"] = current_retrieved
+                    updates["memory_search_calls"] = current_calls + 1
+                    LOGGER.info(
+                        "memory_search_accumulated",
+                        new_count=len(new_memories),
+                        total=len(current_retrieved),
+                        calls_used=current_calls + 1,
+                    )
+                else:
+                    LOGGER.warning("memory_search_budget_exceeded", calls=current_calls)
+
+
 
             # Extract candidates if this looks like a discovery tool
             if isinstance(raw_data, dict) and "items" in raw_data and isinstance(raw_data["items"], list):

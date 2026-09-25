@@ -133,7 +133,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     multi_store_mem_summary = multi_store_knowledge.get("summary", "") if isinstance(multi_store_knowledge, dict) else ""
 
     if user_mem_summary or store_mem_summary or multi_store_mem_summary:
-        sys_content += "Long-term memory context:\n"
+        sys_content += "Bootstrap memory context (stable, pre-loaded facts):\n"
         if user_mem_summary:
             sys_content += f"<user_preferences>\n{user_mem_summary}\n</user_preferences>\n\n"
         if store_mem_summary:
@@ -145,6 +145,45 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
         # inventory, sales, forecasts, restock, or insights MUST call the
         # relevant tools — memory may be stale and will not have current numbers.
         sys_content += MEMORY_WARNING
+
+    # Inject on-demand retrieved memories from search_memory tool calls
+    from app.agent.tools.memory.search import MAX_MEMORY_SEARCH_CALLS
+    retrieved_memories = state.get("retrieved_memories", [])
+    memory_search_calls = state.get("memory_search_calls", 0)
+    if retrieved_memories:
+        # Deduplicate by memory_id before injecting
+        seen_mids: set[str] = set()
+        unique_retrieved = []
+        for rm in retrieved_memories:
+            mid = rm.get("memory_id", "")
+            if mid and mid not in seen_mids:
+                seen_mids.add(mid)
+                unique_retrieved.append(rm)
+            elif not mid:
+                unique_retrieved.append(rm)
+        if unique_retrieved:
+            sys_content += "On-demand retrieved memories (from search_memory tool):\n<retrieved_memories>\n"
+            for rm in unique_retrieved:
+                mem_type = rm.get('memory_type', 'unknown')
+                event_time = rm.get('event_time', '')
+                time_str = f" | {event_time}" if event_time else ""
+                content = rm.get('content', '')
+                sys_content += f"[{mem_type}{time_str}] {content}\n"
+            sys_content += "</retrieved_memories>\n\n"
+
+    # Search budget hint
+    remaining_searches = MAX_MEMORY_SEARCH_CALLS - memory_search_calls
+    if not is_final_loop and remaining_searches > 0:
+        sys_content += (
+            f"You have {remaining_searches} search_memory call(s) remaining. "
+            "Use search_memory only when you need historical decisions, past events, or "
+            "long-term patterns not available in the bootstrap memory above or from live tools.\n\n"
+        )
+    elif not is_final_loop and remaining_searches <= 0:
+        sys_content += (
+            "search_memory budget exhausted — do not call search_memory again. "
+            "Reason from available context and respond directly.\n\n"
+        )
 
     plan = state.get("plan")
     if plan and isinstance(plan, dict):
@@ -230,7 +269,10 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     )
 
     try:
-        response = await llm_with_tools.ainvoke(messages)
+        response = await llm_with_tools.ainvoke(
+            messages,
+            config={"configurable": {"user_id": user_id, "store_id": store_id}},
+        )
     except Exception as exc:
         LOGGER.error("think_node_llm_error", loop=loop, error=str(exc), exc_info=True)
         return {"error": str(exc), "goal_status": "failed"}

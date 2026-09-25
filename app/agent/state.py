@@ -455,6 +455,20 @@ class VyaparAgentState(TypedDict):
     Multi-store enterprise knowledge fetched from Pinecone (scoped by user_id + store_ids).
     """
 
+    retrieved_memories: list[dict[str, Any]]
+    """
+    Memories retrieved on-demand by the agent's search_memory tool during a run.
+    Distinct from bootstrap memory (user_preferences / store_knowledge) which is
+    pre-loaded at graph start. Accumulated across multiple search_memory calls;
+    deduplicated by memory_id before injection into the LLM context.
+    """
+
+    memory_search_calls: int
+    """
+    Number of times the agent has invoked the search_memory tool in the current run.
+    Used to enforce MAX_MEMORY_SEARCH_CALLS budget and prevent runaway retrieval.
+    """
+
     # ──────────────────────────────────────────────────────────────────────
     # 7. Final Output
     # ──────────────────────────────────────────────────────────────────────
@@ -715,6 +729,8 @@ def make_initial_state(
         user_preferences={},
         store_knowledge={},
         multi_store_knowledge={},
+        retrieved_memories=[],
+        memory_search_calls=0,
         # 7. Output — empty until respond node runs
         final_answer="",
         response_metadata={},
