@@ -63,15 +63,33 @@ async def _fetch_user(db, user_id: str) -> dict[str, Any]:
     try:
         doc = await db["users"].find_one(
             {"_id": oid},
-            {"name": 1, "email": 1, "_id": 0},
+            {
+                "name": 1,
+                "email": 1,
+                "preferences": 1,
+                "user_preferences": 1,
+                "communication_style": 1,
+                "preferred_language": 1,
+                "_id": 0,
+            },
         )
         if not doc:
             LOGGER.warning("context_node_user_not_found", user_id=user_id)
             return {}
 
+        prefs = doc.get("preferences") or doc.get("user_preferences") or {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+
+        if doc.get("communication_style"):
+            prefs["communication_style"] = doc.get("communication_style")
+        if doc.get("preferred_language"):
+            prefs["preferred_language"] = doc.get("preferred_language")
+
         return {
             "name": doc.get("name", ""),
             "email": doc.get("email", ""),
+            "preferences": prefs,
         }
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning(

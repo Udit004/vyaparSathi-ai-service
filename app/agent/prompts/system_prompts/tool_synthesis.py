@@ -1,37 +1,33 @@
 """
 app/agent/prompts/system_prompts/tool_synthesis.py
 ===================================================
-Prompt fragment injected when the agent has already gathered data from
-one or more tool calls. Instructs the LLM to synthesize the gathered
-data into a comprehensive, actionable response rather than calling more
-tools unnecessarily.
+Prompt fragment injected when the agent has gathered data from tool calls.
+Instructs the LLM on structuring its response cleanly with tables, metrics,
+and risk badges.
 """
 
+from __future__ import annotations
+
 import json
+from app.agent.prompts.system_prompts.few_shot_examples import FEW_SHOT_SYNTHESIS
 
 
-def build_tool_synthesis(*, results_so_far, inventory_context, sales_context, forecast_context, insights_context, candidate_products=None, discovery_metrics=None) -> str:
+def build_tool_synthesis(
+    *,
+    results_so_far: list[dict],
+    inventory_context: dict,
+    sales_context: dict,
+    forecast_context: dict,
+    insights_context: list,
+    candidate_products: list | None = None,
+    discovery_metrics: dict | None = None,
+) -> str:
     """
     Build the tool-synthesis prompt fragment.
-
-    Args:
-        results_so_far:       Accumulated list of ToolResult dicts.
-        inventory_context:    Dict of inventory tool outputs.
-        sales_context:        Dict of sales tool outputs.
-        forecast_context:     Dict of forecast/restock tool outputs.
-        insights_context:     List of insight dicts.
-        candidate_products:   List of candidate products from discovery.
-        discovery_metrics:    Metrics from discovery operations.
-
-    Returns:
-        A multi-line string with the synthesis instruction and the context
-        buckets serialized as XML-ish blocks for the LLM.
     """
     candidate_products = candidate_products or []
     discovery_metrics = discovery_metrics or {}
     
-    # Context Builder Logic: Filter and limit candidates sent to LLM
-    # If there are many candidates, we only send the top ones.
     top_candidates = candidate_products[:20] if len(candidate_products) > 20 else candidate_products
     
     candidates_context = ""
@@ -51,13 +47,19 @@ def build_tool_synthesis(*, results_so_far, inventory_context, sales_context, fo
             f"{json.dumps(discovery_metrics, default=str)}\n"
             f"</discovery_metrics>\n\n"
         )
-    return (
-        f"You have already gathered data from {len(results_so_far)} tool call(s). "
-        "If you have enough information to fully answer the user's question, "
-        "respond directly WITHOUT calling any more tools. "
-        "Synthesize the gathered data into a comprehensive, actionable response. "
-        "Be specific — reference actual numbers from the data. "
-        "Format clearly with bullet points or sections if appropriate.\n\n"
+
+    synthesis_instruction = (
+        f"DATA SYNTHESIS INSTRUCTIONS ({len(results_so_far)} tool call(s) executed):\n"
+        "1. You have sufficient tool data to fulfill the user's request. Respond directly WITHOUT calling more tools unless essential data is missing.\n"
+        "2. Ground every claim, number, price, and metric strictly in the gathered context below. Never hallucinate stock quantities or prices.\n"
+        "3. Format your response into 3 structured sections:\n"
+        "   - **Executive Summary**: 1-2 direct sentences answering the request.\n"
+        "   - **Key Data & Analysis**: Clear Markdown table or categorized bullet points using risk badges `[CRITICAL]`, `[WARNING]`, `[HEALTHY]` and monetary format `₹`.\n"
+        "   - **Action Recommendations**: Priority-ordered practical next steps for the store owner.\n\n"
+        f"{FEW_SHOT_SYNTHESIS}\n\n"
+    )
+
+    context_blocks = (
         f"<inventory_data>\n{json.dumps(inventory_context, default=str)}\n</inventory_data>\n\n"
         f"<sales_data>\n{json.dumps(sales_context, default=str)}\n</sales_data>\n\n"
         f"<forecast_data>\n{json.dumps(forecast_context, default=str)}\n</forecast_data>\n\n"
@@ -65,3 +67,5 @@ def build_tool_synthesis(*, results_so_far, inventory_context, sales_context, fo
         f"{metrics_context}"
         f"{candidates_context}"
     )
+
+    return synthesis_instruction + context_blocks
