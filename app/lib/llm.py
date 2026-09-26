@@ -48,19 +48,10 @@ def _build_openai(model: str, *, base_url: str, api_key: str, default_headers: d
     Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint.
     """
     from langchain_openai import ChatOpenAI
-    import httpx
 
-    extra_kwargs: dict[str, Any] = {}
-    try:
-        # Create an AsyncClient on the current event loop if one is running
-        loop = asyncio.get_running_loop()
-        if loop and loop.is_running():
-            extra_kwargs["http_async_client"] = httpx.AsyncClient(timeout=30.0)
-    except Exception:
-        pass
-
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     if default_headers:
-        extra_kwargs["default_headers"] = default_headers
+        headers.update(default_headers)
 
     return ChatOpenAI(
         model=model,
@@ -68,7 +59,7 @@ def _build_openai(model: str, *, base_url: str, api_key: str, default_headers: d
         api_key=api_key,
         temperature=0.3,
         max_retries=0,
-        **extra_kwargs,
+        default_headers=headers,
     )
 
 
@@ -91,16 +82,18 @@ _PROVIDERS = [
     # Tier 1: Gemini Primary Reasoning Models
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
 
-    # Tier 2: Groq High-Performance Free Tier Models
-    ("groq", "llama-3.3-70b-versatile", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
-    ("groq", "llama-3.1-8b-instant", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    # Tier 2: Groq High-Performance Active Models (Verified via Live API test)
+    ("groq", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
 
     # Tier 3: OpenRouter Free Models
+    ("openrouter", "openai/gpt-oss-120b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("openrouter", "openai/gpt-oss-20b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
     ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
-    ("openrouter", "google/gemma-2-9b-it:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
 
-    # Tier 4: NVIDIA NIM Models
-    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    # Tier 4: NVIDIA NIM Active Models (Verified via Live API test)
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
 
     # Tier 5: Ollama Local Fallback (if server is running)
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
@@ -155,6 +148,32 @@ class _FallbackLLM:
                     try:
                         fresh_member = self._builders[idx]()
                         return await fresh_member.ainvoke(input, config=config, **kwargs)
+                    except Exception as exc2:
+                        last_error = exc2
+                LOGGER.warning(
+                    "llm_fallback_member_failed",
+                    provider=name,
+                    error=str(exc)[:200],
+                )
+        raise last_error  # type: ignore[misc]
+
+    async def astream(self, input, config=None, **kwargs):
+        last_error = None
+        for idx, (member, name) in enumerate(zip(self._members, self._names)):
+            try:
+                LOGGER.debug("llm_fallback_try_astream", provider=name)
+                async for chunk in member.astream(input, config=config, **kwargs):
+                    yield chunk
+                return
+            except Exception as exc:
+                last_error = exc
+                err_msg = str(exc).lower()
+                if "event loop" in err_msg or "closed" in err_msg:
+                    try:
+                        fresh_member = self._builders[idx]()
+                        async for chunk in fresh_member.astream(input, config=config, **kwargs):
+                            yield chunk
+                        return
                     except Exception as exc2:
                         last_error = exc2
                 LOGGER.warning(
