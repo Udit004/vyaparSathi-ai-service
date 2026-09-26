@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from datetime import datetime
+
 _SEP = "=" * 52
 
 
@@ -23,27 +25,12 @@ def build_agent_base(
     user_context: dict[str, Any] | None = None,
     store_context: dict[str, Any] | None = None,
 ) -> str:
-    """
-    Build the base system prompt fragment.
-
-    Args:
-        store_id:      The store this conversation is scoped to.
-        user_prompt:   The raw user question/instruction.
-        current_goal:  The normalized goal extracted by the think node.
-        loop:          Current loop index (0-based).
-        max_loops:     Hard ceiling on agent loops.
-        user_context:  Lightweight user snapshot from context_node
-                       (keys: name, email). Empty dict when not loaded.
-        store_context: Lightweight store snapshot from context_node
-                       (keys: name, business_type, city, currency,
-                       low_stock_threshold, lead_time_days).
-                       Empty dict when not loaded.
-
-    Returns:
-        A multi-line string ready to be concatenated into the system message.
-    """
     user_ctx = user_context or {}
     store_ctx = store_context or {}
+
+    now = datetime.now()
+    current_date_str = now.strftime("%B %d, %Y")
+    current_year_str = str(now.year)
 
     # -- Owner / user block --------------------------------------------------
     owner_name: str = user_ctx.get("name", "")
@@ -57,6 +44,7 @@ def build_agent_base(
     lead_time_days: int = store_ctx.get("lead_time_days", 3)
 
     # -- Build context header (only show lines that have data) ---------------
+    date_line = f"Current Date: {current_date_str} (Year {current_year_str})"
     owner_line = f"Owner       : {owner_name}" if owner_name else ""
     store_id_line = f"Store ID    : {store_id}"
     store_line = f"Store Name  : {store_name}" if store_name else ""
@@ -71,7 +59,7 @@ def build_agent_base(
     context_lines = [
         line
         for line in [
-            owner_line, store_id_line, store_line, type_line, city_line,
+            date_line, owner_line, store_id_line, store_line, type_line, city_line,
             currency_line, threshold_line,
         ]
         if line
@@ -91,7 +79,7 @@ def build_agent_base(
         "wholesale business owners.\n",
         "",
         _SEP,
-        " STORE CONTEXT",
+        " STORE CONTEXT & SYSTEM TIME",
         _SEP,
         context_block,
         "",
@@ -113,6 +101,12 @@ def build_agent_base(
         _SEP,
         " BEHAVIOUR RULES  (follow strictly)",
         _SEP,
+        (
+            f"0. SYSTEM YEAR & DATE -- Today's date is {current_date_str} (Year {current_year_str}). "
+            f"When formulating web search queries or answering questions about 'current', 'latest', "
+            f"or 'recent' market trends/prices, ALWAYS specify the current year ({current_year_str}). "
+            "NEVER use outdated pre-training years like 2024 or 2025 unless the user explicitly requests historical data."
+        ),
         f"1. PERSONALISATION   -- {greeting_note}",
         (
             f"2. CURRENCY          -- Always express monetary values in {currency}. "

@@ -97,6 +97,13 @@ async def plan_research(state: WebResearchState) -> Dict[str, Any]:
     query = state.get("original_query", "").strip()
     query_lower = query.lower()
     has_temporal = any(kw in query_lower for kw in _TEMPORAL_KEYWORDS)
+    curr_year = str(datetime.now().year)
+
+    # Normalize outdated pre-training years (e.g. 2023, 2024, 2025) if query is asking for current/latest/recent info
+    if has_temporal:
+        for outdated_yr in ("2023", "2024", "2025"):
+            if outdated_yr in query and any(k in query_lower for k in ("current", "latest", "now", "recent", "today", "this year")):
+                query = query.replace(outdated_yr, curr_year)
     
     max_rounds = state.get("max_research_rounds") or 2
     max_rounds = max(1, min(3, max_rounds))
@@ -106,6 +113,7 @@ async def plan_research(state: WebResearchState) -> Dict[str, Any]:
         query=query[:100],
         has_temporal=has_temporal,
         max_rounds=max_rounds,
+        curr_year=curr_year,
     )
 
     return {
@@ -418,11 +426,12 @@ async def refine_query_node(state: WebResearchState) -> Dict[str, Any]:
     curr_round = state.get("research_round", 1)
     next_round = curr_round + 1
     queries = list(state.get("search_queries", []))
+    curr_year = str(datetime.now().year)
 
-    # Construct a refined targeted search query
-    refined = f"{orig_query} market research data updates"
-    if state.get("has_temporal_context") and "2026" not in refined:
-        refined = f"{orig_query} 2026 market statistics"
+    # Construct a refined targeted search query using current year
+    refined = f"{orig_query} market research data updates {curr_year}"
+    if state.get("has_temporal_context") and curr_year not in refined:
+        refined = f"{orig_query} {curr_year} market statistics"
 
     queries.append(refined)
 
@@ -458,6 +467,8 @@ async def synthesize_node(state: WebResearchState) -> Dict[str, Any]:
     errors = state.get("errors", [])
     rounds_taken = state.get("research_round", 1)
     has_temporal = state.get("has_temporal_context", False)
+    curr_year = str(datetime.now().year)
+    curr_date_str = datetime.now().strftime("%B %d, %Y")
 
     if not fetched:
         fail_output = WebResearchOutput(
@@ -517,12 +528,14 @@ async def synthesize_node(state: WebResearchState) -> Dict[str, Any]:
     if llm:
         sys_prompt = (
             "You are an expert web research analyst for VyaparSathi.\n"
-            "Synthesize a clear, accurate, professional answer to the user's research query using ONLY the provided evidence.\n\n"
+            f"SYSTEM TIME: Today's date is {curr_date_str} (Year {curr_year}).\n"
+            f"Synthesize a clear, accurate, professional answer to the user's research query using ONLY the provided evidence.\n\n"
             "STRICT RULES:\n"
-            "1. Ground your answer completely in the provided web evidence.\n"
-            "2. Do NOT fill in missing facts or invent numbers from external knowledge. If the evidence is incomplete, explicitly state what details were missing.\n"
-            "3. If sources conflict, explicitly state the disagreement.\n"
-            "4. Distinguish between publication date and retrieval date when relevant.\n"
+            f"1. Acknowledge that the current year is {curr_year}.\n"
+            "2. Ground your answer completely in the provided web evidence.\n"
+            "3. Do NOT fill in missing facts or invent numbers from external knowledge. If the evidence is incomplete, explicitly state what details were missing.\n"
+            "4. If sources conflict, explicitly state the disagreement.\n"
+            "5. Distinguish between publication date and retrieval date when relevant.\n"
         )
 
         user_prompt = (

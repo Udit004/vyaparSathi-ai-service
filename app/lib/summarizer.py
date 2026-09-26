@@ -134,8 +134,8 @@ async def summarize(
     if not text or not text.strip():
         return ""
 
-    from app.lib.llm import get_llm
-    llm = get_llm()
+    from app.lib.llm import get_small_llm
+    llm = get_small_llm()
     if llm is not None:
         try:
             response = await llm.ainvoke(

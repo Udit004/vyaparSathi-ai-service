@@ -6,7 +6,7 @@ from typing import Literal
 import structlog
 from pydantic import BaseModel, Field
 
-from app.lib.llm import get_llm
+from app.lib.llm import get_small_llm
 from app.lib.summarizer import summarize
 from app.agent.memory.models import ExtractedMemory
 from app.agent.memory.pinecone_client import query_vectors
@@ -62,7 +62,7 @@ async def reconcile_memory(
         "What is the correct action?"
     )
 
-    llm = get_llm()
+    llm = get_small_llm()
     if not llm:
         # Fallback heuristic
         highest_score = max((m.get("score", 0.0) for m in relevant), default=0.0)

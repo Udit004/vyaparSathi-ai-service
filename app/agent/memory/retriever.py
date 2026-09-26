@@ -280,8 +280,8 @@ async def _reconcile_and_update_memory(
     )
 
     try:
-        from app.lib.llm import get_llm
-        llm = get_llm()
+        from app.lib.llm import get_small_llm
+        llm = get_small_llm()
         if llm:
             res = await llm.ainvoke(reconciliation_prompt)
             raw_json_str = res.content if hasattr(res, "content") else str(res)
@@ -363,8 +363,8 @@ async def extract_multi_level_memory(messages: list[dict]) -> dict[str, list[str
     )
 
     try:
-        from app.lib.llm import get_llm
-        llm = get_llm()
+        from app.lib.llm import get_small_llm
+        llm = get_small_llm()
         if llm:
             res = await llm.ainvoke(prompt)
             raw_json_str = res.content if hasattr(res, "content") else str(res)
