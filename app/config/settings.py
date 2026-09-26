@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     pinecone_api_key: str | None = None
     pincone_api_key: str | None = None
     pinecone_index_name: str = "vyapar-sathi"
+    # Web search
+    tavily_api_key: str | None = None
+    # Web search / scraping (Firecrawl)
+    firecrawl_api_key: str | None = None
+    firecrawl_api_url: str = "https://api.firecrawl.dev"
+    firecrawl_timeout_seconds: float = 60.0
 
     @property
     def effective_pinecone_api_key(self) -> str | None:

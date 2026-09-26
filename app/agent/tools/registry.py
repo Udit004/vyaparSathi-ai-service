@@ -30,6 +30,9 @@ from app.agent.tools.forecast.stockout import get_stockout_estimate
 # Insights
 from app.agent.tools.insights.store_insights import get_store_insights
 
+# Web search
+from app.agent.tools.web.search_web import search_web
+
 # Products
 from app.agent.tools.products.search import search_products
 from app.agent.tools.products.details import get_product_details
@@ -85,6 +88,9 @@ VYAPAR_TOOLS = [
     
     # Insights
     get_store_insights,
+
+    # Web search
+    search_web,
     
     # Products
     search_products,
