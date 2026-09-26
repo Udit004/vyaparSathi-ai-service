@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     firecrawl_api_key: str | None = None
     firecrawl_api_url: str = "https://api.firecrawl.dev"
     firecrawl_timeout_seconds: float = 60.0
+    # Cloudflare R2 object storage
+    cloudflare_account_id: str | None = None
+    cloudflare_r2_endpoint: str | None = None
+    cloudflare_r2_access_key_id: str | None = None
+    cloudflare_r2_secret_access_key: str | None = None
+    cloudflare_r2_bucket_name: str | None = None
+    # Cloudflare R2 object storage. These remain optional at application startup
+    # because document storage is an independent, on-demand capability.
+    cloudflare_account_id: str | None = None
+    cloudflare_r2_endpoint: str | None = None
+    cloudflare_r2_access_key_id: str | None = None
+    cloudflare_r2_secret_access_key: str | None = None
+    cloudflare_r2_bucket_name: str | None = None
 
     @property
     def effective_pinecone_api_key(self) -> str | None:
