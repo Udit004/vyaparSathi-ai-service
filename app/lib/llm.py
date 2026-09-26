@@ -90,11 +90,11 @@ _LARGE_PROVIDERS = [
 
 # Providers prioritized for Fast/Lightweight tasks: Memory extraction, retrieval, summarization, intent routing
 _SMALL_PROVIDERS = [
+    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
     ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("openrouter", "openai/gpt-oss-20b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
     ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
-    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
