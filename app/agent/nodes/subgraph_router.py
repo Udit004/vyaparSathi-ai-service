@@ -42,6 +42,7 @@ from langchain_core.messages import ToolMessage
 from app.agent.subgraphs.morning_briefing.graph import morning_briefing_graph
 from app.agent.subgraphs.deep_inventory.graph import deep_inventory_graph
 from app.agent.subgraphs.smart_restock.graph import smart_restock_graph
+from app.agent.subgraphs.web_research.graph import web_research_graph
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.nodes.subgraph_router")
 
@@ -59,12 +60,17 @@ _SUBGRAPH_REGISTRY: dict[str, dict[str, Any]] = {
         "graph": smart_restock_graph,
         "output_key": "restock_output",
     },
+    "web_research": {
+        "graph": web_research_graph,
+        "output_key": "synthesis",
+    },
 }
 
 _SUBGRAPH_TOOL_NAMES = {
     "invoke_morning_briefing",
     "invoke_deep_inventory_audit",
     "invoke_smart_restock_order",
+    "web_research",
 }
 
 

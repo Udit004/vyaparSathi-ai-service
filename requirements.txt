@@ -31,7 +31,8 @@ catboost==1.2.8
 pinecone-client
 langchain-pinecone
 
-# Web search / scraping (Firecrawl)
+# Web search / scraping (Tavily & Firecrawl)
+tavily-python
 firecrawl-py
 
 # Observability

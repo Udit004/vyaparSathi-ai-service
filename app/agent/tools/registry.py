@@ -32,6 +32,7 @@ from app.agent.tools.insights.store_insights import get_store_insights
 
 # Web search
 from app.agent.tools.web.search_web import search_web
+from app.agent.tools.web.web_research import web_research
 
 # Products
 from app.agent.tools.products.search import search_products
@@ -91,6 +92,7 @@ VYAPAR_TOOLS = [
 
     # Web search
     search_web,
+    web_research,
     
     # Products
     search_products,
