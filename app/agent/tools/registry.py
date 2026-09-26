@@ -52,6 +52,7 @@ from app.agent.tools.suppliers.pricing import get_supplier_pricing
 from app.agent.tools.subgraphs.invoke_briefing import invoke_morning_briefing
 from app.agent.tools.subgraphs.invoke_inventory_audit import invoke_deep_inventory_audit
 from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_order
+from app.agent.tools.subgraphs.invoke_document_generation import invoke_document_generation
 
 # Memory
 from app.agent.tools.memory.search import search_memory
@@ -112,10 +113,12 @@ VYAPAR_TOOLS = [
     invoke_morning_briefing,
     invoke_deep_inventory_audit,
     invoke_smart_restock_order,
+    invoke_document_generation,
 
     # Memory search (agent-controlled long-term memory retrieval)
     search_memory,
 ]
+
 
 def get_tool_by_name(name: str):
     """Helper to dispatch tool calls."""

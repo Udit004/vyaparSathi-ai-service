@@ -48,18 +48,36 @@ def build_tool_synthesis(
             f"</discovery_metrics>\n\n"
         )
 
+    doc_download_instruction = ""
+    for r in results_so_far:
+        data = r.get("data", {})
+        if isinstance(data, dict):
+            file_info = data.get("file") if isinstance(data.get("file"), dict) else data
+            download_url = file_info.get("download_url")
+            filename = file_info.get("filename", "report.xlsx")
+            if download_url:
+                doc_download_instruction += (
+                    f"\n[CRITICAL: DOCUMENT GENERATED & READY FOR DOWNLOAD]\n"
+                    f"File Name: {filename}\n"
+                    f"Download URL: {download_url}\n"
+                    f"You MUST prominently include a Markdown download button/link in your Executive Summary or response:\n"
+                    f"📥 **[Download {filename}]({download_url})**\n\n"
+                )
+
     synthesis_instruction = (
         f"DATA SYNTHESIS INSTRUCTIONS ({len(results_so_far)} tool call(s) executed):\n"
+        f"{doc_download_instruction}"
         "1. You have sufficient tool data to fulfill the user's request. Respond directly WITHOUT calling more tools unless essential data is missing.\n"
-        "2. Ground every claim, number, price, and metric strictly in the gathered context below. Never hallucinate stock quantities or prices.\n"
+        "2. Ground every claim, number, product name, and metric strictly in the gathered context below (<tool_results_gathered>). Never hallucinate product names or stock quantities. Do NOT copy example names (such as Basmati Rice or Tata Salt) from example templates.\n"
         "3. Format your response into 3 structured sections:\n"
-        "   - **Executive Summary**: 1-2 direct sentences answering the request.\n"
+        "   - **Executive Summary**: 1-2 direct sentences answering the request (include file download link if a document was created).\n"
         "   - **Key Data & Analysis**: Clear Markdown table or categorized bullet points using risk badges `[CRITICAL]`, `[WARNING]`, `[HEALTHY]` and monetary format `₹`.\n"
         "   - **Action Recommendations**: Priority-ordered practical next steps for the store owner.\n\n"
         f"{FEW_SHOT_SYNTHESIS}\n\n"
     )
 
     context_blocks = (
+        f"<tool_results_gathered>\n{json.dumps(results_so_far, default=str)}\n</tool_results_gathered>\n\n"
         f"<inventory_data>\n{json.dumps(inventory_context, default=str)}\n</inventory_data>\n\n"
         f"<sales_data>\n{json.dumps(sales_context, default=str)}\n</sales_data>\n\n"
         f"<forecast_data>\n{json.dumps(forecast_context, default=str)}\n</forecast_data>\n\n"
@@ -67,5 +85,6 @@ def build_tool_synthesis(
         f"{metrics_context}"
         f"{candidates_context}"
     )
+
 
     return synthesis_instruction + context_blocks

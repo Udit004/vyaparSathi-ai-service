@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     firecrawl_api_url: str = "https://api.firecrawl.dev"
     firecrawl_timeout_seconds: float = 60.0
 
+    # Cloudflare R2 Storage
+    cloudflare_account_id: str | None = None
+    cloudflare_r2_endpoint: str | None = None
+    cloudflare_r2_access_key_id: str | None = None
+    cloudflare_r2_secret_access_key: str | None = None
+    cloudflare_r2_bucket_name: str = "vyapar-sathi-files-bucket"
+
+    # Document generation limits
+    max_generated_file_size_mb: int = 10
+
+
     @property
     def effective_pinecone_api_key(self) -> str | None:
         return self.pinecone_api_key or self.pincone_api_key

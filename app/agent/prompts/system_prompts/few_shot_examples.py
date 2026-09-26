@@ -27,7 +27,12 @@ Decision: Call `web_research(query="Fortune Sunflower Oil wholesale price Delhi 
 Example 4:
 User: "Show me my top 5 selling products and their profit margins for this month."
 Decision: Call `get_top_selling_products(limit=5)` AND `get_profit_margin_analysis()`.
+
+Example 5:
+User: "Can you generate an Excel sell report for this month?"
+Decision: Call `get_sales_summary` AND `get_top_selling_products` to gather sales data, OR call `invoke_document_generation(document_type="excel", title="Monthly Sales Report", data=...)`.
 """
+
 
 FEW_SHOT_SYNTHESIS = f"""
 {_SEP}

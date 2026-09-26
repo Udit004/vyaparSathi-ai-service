@@ -13,10 +13,12 @@ TOOL_SELECTION_RULES = f"""
  TOOL SELECTION & EXECUTION MATRIX
 {_SEP}
 1. HIGH-LEVEL SUBGRAPHS (Use for comprehensive workflows):
+   - `invoke_document_generation`: Use when asked to "generate", "create", "export", "build", or "download" a report/file in Excel (.xlsx) or Word (.docx) format (e.g. "generate excel sell report for this month", "create word report for low stock").
    - `invoke_morning_briefing`: Use when the merchant asks for "morning briefing", "daily overview", "today's summary", or overall store status.
    - `invoke_deep_inventory_audit`: Use when asked for "full inventory audit", "complete stock inspection", "dead stock & expiry check".
    - `invoke_smart_restock_order`: Use when asked to generate a "restock plan", "purchase order", or "what should I order from suppliers".
    - `web_research`: Use when the user needs deep web intelligence (market trends, competitor pricing, supplier discovery across web, 2026 industry reports).
+
 
 2. QUICK WEB SEARCH VS DEEP RESEARCH:
    - `search_web`: Quick single keyword lookup or simple web check.
