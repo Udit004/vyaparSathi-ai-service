@@ -89,8 +89,11 @@ def _route_after_memory_query(state: VyaparAgentState) -> str:
 def _route_after_intent(state: VyaparAgentState) -> str:
     """
     Conditional edge function called after intent_node.
-    Routes to memory_query so long-term memory is pre-loaded at the start of the loop.
+    - greeting intent → END (intent_node already set final_answer)
+    - everything else → memory_query
     """
+    if state.get("intent") == "greeting":
+        return "__end__"
     return "memory_query"
 
 def _route_after_grader(state: VyaparAgentState) -> str:
@@ -219,8 +222,15 @@ def build_graph(checkpointer=None):
         },
     )
 
-    # intent -> memory_query (pre-load long-term memory at start of loop)
-    workflow.add_edge("intent", "memory_query")
+    # intent -> greeting short-circuit or memory_query
+    workflow.add_conditional_edges(
+        "intent",
+        _route_after_intent,
+        {
+            "__end__": END,
+            "memory_query": "memory_query",
+        },
+    )
 
     # memory_query -> planner or think
     workflow.add_conditional_edges(

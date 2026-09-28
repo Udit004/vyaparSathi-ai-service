@@ -142,7 +142,8 @@ async def summarize(
                 [
                     {"role": "system", "content": instruction},
                     {"role": "user", "content": text},
-                ]
+                ],
+                config={"tags": ["hide_stream"]}
             )
             summary = response.content if hasattr(response, "content") else str(response)
             if summary and isinstance(summary, str):
