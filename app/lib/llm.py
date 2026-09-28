@@ -306,6 +306,23 @@ def _build_chain(provider_list: list) -> _FallbackLLM | None:
     return _FallbackLLM(members, names, builders)
 
 
+def get_llm() -> _FallbackLLM | None:
+    """
+    Return the primary fallback LLM chain for complex reasoning, planning,
+    and synthesis tasks.
+
+    Builds (on each call) a ``_FallbackLLM`` over ``_LARGE_PROVIDERS``,
+    ordered by priority: Gemini first, then Groq, OpenRouter, NVIDIA, and
+    Ollama (local). Returns ``None`` when no provider key is configured.
+    """
+    chain = _build_chain(_LARGE_PROVIDERS)
+    if chain is None:
+        LOGGER.error("get_llm_no_provider_configured")
+        return None
+    LOGGER.info("get_llm_fallback_chain_built", members=chain._names)
+    return chain
+
+
 def get_safeguard_llm() -> _FallbackLLM | None:
     """
     Return the fallback LLM chain specifically for safety grading (Guard models).
@@ -359,8 +376,8 @@ def get_small_llm() -> _FallbackLLM | None:
     Iterates through Groq, OpenRouter, NVIDIA, and Ollama first,
     falling back to Gemini only if no fast models are available.
     """
-    small_providers = [p for p in _PROVIDERS if p[0] != "gemini"]
-    gemini_providers = [p for p in _PROVIDERS if p[0] == "gemini"]
+    small_providers = [p for p in _LARGE_PROVIDERS if p[0] != "gemini"]
+    gemini_providers = [p for p in _LARGE_PROVIDERS if p[0] == "gemini"]
     reordered_providers = small_providers + gemini_providers
 
     members: list[Any] = []
@@ -433,7 +450,7 @@ def clear_llm_cache():
 def get_llm_status() -> dict:
     """Return diagnostic info about which providers and keys are available."""
     available = []
-    for provider_name, model, _build_fn, provider_prefix in _PROVIDERS:
+    for provider_name, model, _build_fn, provider_prefix in _LARGE_PROVIDERS:
         keys = get_provider_keys(provider_prefix) if provider_name != "ollama" else [os.getenv("OLLAMA_BASE_URL", "")]
         keys = [k for k in keys if k]
         available.append(
