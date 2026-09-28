@@ -14,6 +14,8 @@ from prometheus_client import (
 
 from app.config.logging import configure_logging
 from app.config.database import close_connection, get_database
+from app.config.redis import init_redis, close_redis
+from app.workers.ai_worker import start_python_worker, stop_python_worker
 from app.config.settings import get_settings
 
 from app.routes.index import api_router
@@ -107,6 +109,10 @@ async def lifespan(application: FastAPI):
         "database_initialized"
     )
 
+    # Initialize Redis connection & BullMQ worker
+    application.state.redis = await init_redis()
+    application.state.bullmq_worker = await start_python_worker()
+
     # -----------------------------------------------------------------------
     # Forecasting model
     # -----------------------------------------------------------------------
@@ -161,6 +167,10 @@ async def lifespan(application: FastAPI):
 
         # Close main application database connection
         await close_connection()
+
+        # Close BullMQ worker & Redis connection
+        await stop_python_worker()
+        await close_redis()
 
         # Close LangGraph checkpointer MongoDB client.
         #

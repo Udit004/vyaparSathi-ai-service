@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     mongo_url: str = "mongodb://localhost:27017"
     mongo_db_name: str = "vyapar-sathi"
+    redis_url: str | None = None
     langchain_api_key: str | None = None
     langchain_project: str = "vyaparSathi-ai"
     langchain_verbose: bool = True
