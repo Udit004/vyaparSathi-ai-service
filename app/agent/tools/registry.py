@@ -10,6 +10,7 @@ from app.agent.tools.inventory.expiry_alerts import get_expiry_alerts
 from app.agent.tools.inventory.category_stock_health import get_category_stock_health
 from app.agent.tools.inventory.slow_moving import get_slow_moving_products
 from app.agent.tools.inventory.stockout_risk import get_stockout_risk_products
+from app.agent.tools.inventory.recently_added import get_recently_added_products
 
 # Sales
 from app.agent.tools.sales.summary import get_sales_summary
@@ -71,6 +72,9 @@ VYAPAR_TOOLS = [
     get_category_stock_health,
     get_slow_moving_products,
     get_stockout_risk_products,
+    
+    # Recently added products
+    get_recently_added_products,
     
     # Sales
     get_sales_summary,
