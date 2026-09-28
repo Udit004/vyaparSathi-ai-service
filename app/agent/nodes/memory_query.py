@@ -109,6 +109,10 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     if already_loaded:
         LOGGER.debug("bootstrap_memory_skip", reason="already_loaded", store_id=store_id)
         return {"memory_query_needed": False}
+        
+    if intent == "greeting":
+        LOGGER.debug("bootstrap_memory_skip", reason="greeting_intent", store_id=store_id)
+        return {"memory_query_needed": False}
 
     LOGGER.info(
         "bootstrap_memory_started",

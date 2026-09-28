@@ -134,15 +134,16 @@ async def summarize(
     if not text or not text.strip():
         return ""
 
-    from app.lib.llm import get_llm
-    llm = get_llm()
+    from app.lib.llm import get_small_llm
+    llm = get_small_llm()
     if llm is not None:
         try:
             response = await llm.ainvoke(
                 [
                     {"role": "system", "content": instruction},
                     {"role": "user", "content": text},
-                ]
+                ],
+                config={"tags": ["hide_stream"]}
             )
             summary = response.content if hasattr(response, "content") else str(response)
             if summary and isinstance(summary, str):

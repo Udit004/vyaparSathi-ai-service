@@ -99,6 +99,12 @@ _PROVIDERS = [
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
+_SAFEGUARD_PROVIDERS = [
+    ("groq", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("openrouter", "openai/gpt-oss-safeguard-20b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("nvidia", "nvidia/llama-3.1-8b-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+]
+
 
 # ---------------------------------------------------------------------------
 # Fallback chain
@@ -314,6 +320,125 @@ def get_llm() -> _FallbackLLM | None:
         return None
 
     LOGGER.info("llm_fallback_chain_built", members=names)
+    return _FallbackLLM(members, names, builders)
+
+
+def get_safeguard_llm() -> _FallbackLLM | None:
+    """
+    Return the fallback LLM chain specifically for safety grading (Guard models).
+    """
+    members: list[Any] = []
+    names: list[str] = []
+    builders: list[Callable[[], Any]] = []
+
+    for provider_name, model, build_fn, provider_prefix in _SAFEGUARD_PROVIDERS:
+        keys = get_provider_keys(provider_prefix)
+        if not keys:
+            LOGGER.debug("safeguard_llm_provider_skip_no_key", provider=provider_name, model=model)
+            continue
+
+        for idx, key in enumerate(keys, 1):
+            try:
+                b_fn = partial(build_fn, model, api_key=key)
+                llm = b_fn()
+                members.append(llm)
+                builders.append(b_fn)
+                key_tag = f"key_{idx}"
+                names.append(f"{provider_name}/{model} ({key_tag})")
+                LOGGER.info(
+                    "safeguard_llm_provider_ready",
+                    provider=provider_name,
+                    model=model,
+                    key_index=idx,
+                    position=len(members),
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "safeguard_llm_provider_init_failed",
+                    provider=provider_name,
+                    model=model,
+                    key_index=idx,
+                    error=str(exc)[:200],
+                )
+
+    if not members:
+        LOGGER.error("safeguard_llm_no_provider_configured")
+        return None
+
+    LOGGER.info("safeguard_llm_fallback_chain_built", members=names)
+    return _FallbackLLM(members, names, builders)
+
+
+def get_small_llm() -> _FallbackLLM | None:
+    """
+    Return the fallback LLM chain prioritizing small/fast models.
+
+    Iterates through Groq, OpenRouter, NVIDIA, and Ollama first,
+    falling back to Gemini only if no fast models are available.
+    """
+    small_providers = [p for p in _PROVIDERS if p[0] != "gemini"]
+    gemini_providers = [p for p in _PROVIDERS if p[0] == "gemini"]
+    reordered_providers = small_providers + gemini_providers
+
+    members: list[Any] = []
+    names: list[str] = []
+    builders: list[Callable[[], Any]] = []
+
+    for provider_name, model, build_fn, provider_prefix in reordered_providers:
+        if provider_name == "ollama":
+            settings = get_settings()
+            base_url = settings.ollama_base_url or os.getenv("OLLAMA_BASE_URL")
+            if not base_url:
+                continue
+            try:
+                b_fn = partial(build_fn, model, base_url=base_url)
+                llm = b_fn()
+                members.append(llm)
+                builders.append(b_fn)
+                names.append(f"ollama/{model}")
+                LOGGER.info("small_llm_provider_ready", provider="ollama", model=model, position=len(members))
+            except Exception as exc:
+                LOGGER.warning("small_llm_provider_init_failed", provider="ollama", model=model, error=str(exc)[:200])
+            continue
+
+        keys = get_provider_keys(provider_prefix)
+        if not keys:
+            LOGGER.debug("small_llm_provider_skip_no_key", provider=provider_name, model=model)
+            continue
+
+        for idx, key in enumerate(keys, 1):
+            try:
+                if provider_name == "gemini":
+                    b_fn = partial(_build_gemini, model, api_key=key)
+                else:
+                    b_fn = partial(build_fn, model, api_key=key)
+
+                llm = b_fn()
+                members.append(llm)
+                builders.append(b_fn)
+                key_tag = f"key_{idx}"
+                names.append(f"{provider_name}/{model} ({key_tag})")
+                LOGGER.info(
+                    "small_llm_provider_ready",
+                    provider=provider_name,
+                    model=model,
+                    key_index=idx,
+                    position=len(members),
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "small_llm_provider_init_failed",
+                    provider=provider_name,
+                    model=model,
+                    key_index=idx,
+                    error=str(exc)[:200],
+                )
+
+    if not members:
+        LOGGER.error("small_llm_no_provider_configured")
+        return None
+
+    LOGGER.info("small_llm_fallback_chain_built", members=names)
     return _FallbackLLM(members, names, builders)
 
 

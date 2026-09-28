@@ -14,7 +14,16 @@ import structlog
 from app.agent.state import VyaparAgentState
 from app.agent.utils import latest_human_prompt, message_text
 from app.lib.grader import is_retail_follow_up, _SEVERE_HARM_KEYWORDS
+from app.lib.llm import get_safeguard_llm
+from app.agent.prompts.classifier_prompts.harm_check import CLASSIFIER_HARM_INSTRUCTION
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class GraderClassification(BaseModel):
+    verdict: Literal["safe", "off_topic", "harmful"] = Field(description="The safety verdict: safe, off_topic, or harmful")
+    reason: str = Field(description="Brief reason for the verdict (max 15 words)")
+
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.grader")
 
@@ -110,14 +119,84 @@ async def grader_node(state: VyaparAgentState) -> Dict[str, Any]:
             "response_metadata": {"grader_denied": True, "grader_verdict": "harmful"},
         }
 
-    # Skip LLM classification for now — allow everything non-harmful
-    LOGGER.info(
-        "grader_node_disabled",
-        store_id=store_id,
-        reason="temporarily disabled — all non-harmful prompts allowed",
-    )
+    # Call LLM for classification
+    llm = get_safeguard_llm()
+    if llm:
+        try:
+            classifier = llm.with_structured_output(GraderClassification)
+            response = await classifier.ainvoke(
+                [
+                    {"role": "system", "content": CLASSIFIER_HARM_INSTRUCTION},
+                    {"role": "user", "content": user_prompt}
+                ],
+                config={"tags": ["hide_stream"]}
+            )
+            verdict = response.verdict
+            reason = response.reason
+            
+            LOGGER.info(
+                "grader_llm_classified",
+                store_id=store_id,
+                verdict=verdict,
+                reason=reason,
+            )
+            
+            if verdict == "harmful":
+                return {
+                    "user_prompt": user_prompt,
+                    "grader_denied": True,
+                    "grader_reason": reason,
+                    "goal_status": "complete",
+                    "goal": "refuse harmful request",
+                    "final_answer": _REFUSAL_HARMFUL,
+                    "should_persist_memory": False,
+                    "messages": [AIMessage(content=_REFUSAL_HARMFUL)],
+                    "response_metadata": {"grader_denied": True, "grader_verdict": "harmful"},
+                }
+            elif verdict == "off_topic":
+                return {
+                    "user_prompt": user_prompt,
+                    "grader_denied": True,
+                    "grader_reason": reason,
+                    "goal_status": "complete",
+                    "goal": "refuse off-topic request",
+                    "final_answer": _REFUSAL_OFF_TOPIC,
+                    "should_persist_memory": False,
+                    "messages": [AIMessage(content=_REFUSAL_OFF_TOPIC)],
+                    "response_metadata": {"grader_denied": True, "grader_verdict": "off_topic"},
+                }
+            else:
+                return {
+                    "user_prompt": user_prompt,
+                    "grader_denied": False,
+                    "grader_reason": reason,
+                }
+                
+        except Exception as e:
+            LOGGER.warning("grader_llm_failed", store_id=store_id, error=str(e))
+            # Fail closed on LLM error
+            return {
+                "user_prompt": user_prompt,
+                "grader_denied": True,
+                "grader_reason": "classifier error — denied by default",
+                "goal_status": "complete",
+                "goal": "refuse due to classifier error",
+                "final_answer": _REFUSAL_OFF_TOPIC,
+                "should_persist_memory": False,
+                "messages": [AIMessage(content=_REFUSAL_OFF_TOPIC)],
+                "response_metadata": {"grader_denied": True, "grader_verdict": "error"},
+            }
+
+    # If no LLM configured, fail closed
+    LOGGER.warning("grader_no_llm_configured", store_id=store_id)
     return {
         "user_prompt": user_prompt,
-        "grader_denied": False,
-        "grader_reason": "",
+        "grader_denied": True,
+        "grader_reason": "classifier unavailable — denied by default",
+        "goal_status": "complete",
+        "goal": "refuse due to missing classifier",
+        "final_answer": _REFUSAL_OFF_TOPIC,
+        "should_persist_memory": False,
+        "messages": [AIMessage(content=_REFUSAL_OFF_TOPIC)],
+        "response_metadata": {"grader_denied": True, "grader_verdict": "unavailable"},
     }

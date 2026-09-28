@@ -162,6 +162,10 @@ async def _stream_graph_events(
 
             # --- Stream LLM tokens ---
             if kind == "on_chat_model_stream":
+                tags = event.get("tags", [])
+                if "hide_stream" in tags:
+                    continue
+
                 msg_chunk = event["data"]["chunk"]
                 if msg_chunk.content:
                     text = _flatten_text(msg_chunk.content)
@@ -567,9 +571,9 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
             # --- Normal completion path ---
             full_response = result.get("full_response", "")
 
-            # When the grader denies the request no LLM tokens are streamed,
-            # so fall back to the refusal stored in graph state and emit it
-            # to the client as token events so the refusal is visible.
+            # When no tokens were streamed (grader denial, greeting fast-path,
+            # or any other short-circuit node), fall back to final_answer stored
+            # in graph state and emit it as token events so the UI shows it.
             grader_denied = False
             if not full_response and not result.get("error"):
                 try:
@@ -577,14 +581,15 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                     values = final_state.values or {}
                     grader_denied = bool(values.get("grader_denied"))
                     state_answer = values.get("final_answer") or ""
-                    if grader_denied and state_answer:
+                    if state_answer:
                         yield f"event: token\ndata: {json.dumps({'text': state_answer})}\n\n"
                         full_response = state_answer
                         LOGGER.info(
-                            "copilot_stream_grader_refusal_emitted",
+                            "copilot_stream_fast_path_emitted",
                             store_id=store_id,
                             chat_id=chat_id,
-                            grader_reason=values.get("grader_reason", ""),
+                            intent=values.get("intent", "unknown"),
+                            grader_denied=grader_denied,
                         )
                 except Exception as exc:
                     LOGGER.warning(
@@ -865,7 +870,7 @@ async def clarify(
             # ----------------------------------------------------------
             full_response = result.get("full_response", "")
 
-            # Grader denial fallback (no tokens may have streamed)
+            # Fast-path fallback (no tokens may have streamed: grader denial, greeting, etc.)
             grader_denied = False
             if not full_response and not result.get("error"):
                 try:
@@ -873,7 +878,7 @@ async def clarify(
                     values = final_state.values or {}
                     grader_denied = bool(values.get("grader_denied"))
                     state_answer = values.get("final_answer") or ""
-                    if grader_denied and state_answer:
+                    if state_answer:
                         yield f"event: token\ndata: {json.dumps({'text': state_answer})}\n\n"
                         full_response = state_answer
                 except Exception:
