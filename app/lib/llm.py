@@ -78,24 +78,23 @@ _OPENAI_BASE_URL = {
     "openrouter": "https://openrouter.ai/api/v1",
 }
 
-_PROVIDERS = [
-    # Tier 1: Gemini Primary Reasoning Models
+# Providers prioritized for Complex Reasoning, Planning, Synthesis, and Main Thinking Nodes
+_LARGE_PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
-
-    # Tier 2: Groq High-Performance Active Models (Verified via Live API test)
     ("groq", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("openrouter", "openai/gpt-oss-120b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("ollama", "llama3", _build_ollama, "OLLAMA"),
+]
+
+# Providers prioritized for Fast/Lightweight tasks: Memory extraction, retrieval, summarization, intent routing
+_SMALL_PROVIDERS = [
+    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
     ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
-
-    # Tier 3: OpenRouter Free Models
-    ("openrouter", "openai/gpt-oss-120b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
     ("openrouter", "openai/gpt-oss-20b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
-    ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
-
-    # Tier 4: NVIDIA NIM Active Models (Verified via Live API test)
     ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
-
-    # Tier 5: Ollama Local Fallback (if server is running)
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
@@ -252,20 +251,15 @@ class _FallbackLLM:
 
 
 # ---------------------------------------------------------------------------
-# Public factory
+# Internal builder helper
 # ---------------------------------------------------------------------------
 
-def get_llm() -> _FallbackLLM | None:
-    """
-    Return the fallback LLM chain, or None if no provider is configured.
-
-    Iterates through all configured Gemini, Groq, OpenRouter, NVIDIA, and Ollama keys.
-    """
+def _build_chain(provider_list: list) -> _FallbackLLM | None:
     members: list[Any] = []
     names: list[str] = []
     builders: list[Callable[[], Any]] = []
 
-    for provider_name, model, build_fn, provider_prefix in _PROVIDERS:
+    for provider_name, model, build_fn, provider_prefix in provider_list:
         if provider_name == "ollama":
             settings = get_settings()
             base_url = settings.ollama_base_url or os.getenv("OLLAMA_BASE_URL")
@@ -277,14 +271,12 @@ def get_llm() -> _FallbackLLM | None:
                 members.append(llm)
                 builders.append(b_fn)
                 names.append(f"ollama/{model}")
-                LOGGER.info("llm_provider_ready", provider="ollama", model=model, position=len(members))
             except Exception as exc:
                 LOGGER.warning("llm_provider_init_failed", provider="ollama", model=model, error=str(exc)[:200])
             continue
 
         keys = get_provider_keys(provider_prefix)
         if not keys:
-            LOGGER.debug("llm_provider_skip_no_key", provider=provider_name, model=model)
             continue
 
         for idx, key in enumerate(keys, 1):
@@ -299,13 +291,6 @@ def get_llm() -> _FallbackLLM | None:
                 builders.append(b_fn)
                 key_tag = f"key_{idx}"
                 names.append(f"{provider_name}/{model} ({key_tag})")
-                LOGGER.info(
-                    "llm_provider_ready",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    position=len(members),
-                )
             except Exception as exc:
                 LOGGER.warning(
                     "llm_provider_init_failed",
@@ -316,10 +301,8 @@ def get_llm() -> _FallbackLLM | None:
                 )
 
     if not members:
-        LOGGER.error("llm_no_provider_configured")
         return None
 
-    LOGGER.info("llm_fallback_chain_built", members=names)
     return _FallbackLLM(members, names, builders)
 
 

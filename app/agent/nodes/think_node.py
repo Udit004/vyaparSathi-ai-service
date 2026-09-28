@@ -332,7 +332,7 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             loop=loop,
             llm_latency_ms=elapsed_ms,
         )
-        final_text = response.content if hasattr(response, "content") else str(response)
+        final_text = _flatten_text(response.content) if hasattr(response, "content") else _flatten_text(response)
         tools_used = list({r["tool_name"] for r in state.get("tool_results", [])})
 
         # Determine if this conversation is worth persisting to mem0.
@@ -452,7 +452,7 @@ def _is_conversation_meaningful(
         return True
 
     # Check if user prompt is trivial
-    prompt_lower = (user_prompt or "").strip().lower()
+    prompt_lower = _flatten_text(user_prompt).strip().lower()
     if prompt_lower in _TRIVIAL_PATTERNS:
         return False
 
@@ -461,7 +461,7 @@ def _is_conversation_meaningful(
         return False
 
     # Check if the final answer is substantive
-    answer_lower = (final_answer or "").strip().lower()
+    answer_lower = _flatten_text(final_answer).strip().lower()
     if len(answer_lower) < _MIN_MEANINGFUL_LENGTH:
         return False
 

@@ -42,8 +42,13 @@ from langchain_core.messages import ToolMessage
 from app.agent.subgraphs.morning_briefing.graph import morning_briefing_graph
 from app.agent.subgraphs.deep_inventory.graph import deep_inventory_graph
 from app.agent.subgraphs.smart_restock.graph import smart_restock_graph
+from app.agent.subgraphs.web_research.graph import web_research_graph
+from app.agent.subgraphs.document_generation.graph import document_generation_graph
+
+from app.agent.state import make_tool_result
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.nodes.subgraph_router")
+
 
 # Subgraph name → compiled graph + output key mapping
 _SUBGRAPH_REGISTRY: dict[str, dict[str, Any]] = {
@@ -59,13 +64,24 @@ _SUBGRAPH_REGISTRY: dict[str, dict[str, Any]] = {
         "graph": smart_restock_graph,
         "output_key": "restock_output",
     },
+    "web_research": {
+        "graph": web_research_graph,
+        "output_key": "synthesis",
+    },
+    "document_generation": {
+        "graph": document_generation_graph,
+        "output_key": "file_metadata",
+    },
 }
 
 _SUBGRAPH_TOOL_NAMES = {
     "invoke_morning_briefing",
     "invoke_deep_inventory_audit",
     "invoke_smart_restock_order",
+    "invoke_document_generation",
+    "web_research",
 }
+
 
 
 def _extract_subgraph_marker(messages: list) -> tuple[dict | None, str | None, str | None]:
@@ -127,11 +143,13 @@ async def subgraph_router(state: dict) -> dict:
     # Build input state from marker params + store context
     subgraph_input: dict[str, Any] = {
         "store_id": marker.get("store_id", state.get("store_id", "")),
+        "user_id": state.get("user_id", ""),
         "currency": store_ctx.get("currency", "INR"),
         "low_stock_threshold": store_ctx.get("low_stock_threshold", 10),
         "lead_time_days": store_ctx.get("lead_time_days", 3),
         "owner_name": user_ctx.get("name", ""),
     }
+
 
     # Merge any extra params from the marker (e.g. expiry_alert_days, include_yellow)
     for key, val in marker.items():
@@ -143,13 +161,25 @@ async def subgraph_router(state: dict) -> dict:
         output_key = entry["output_key"]
 
         result_state = await compiled_graph.ainvoke(subgraph_input)
-        subgraph_output = result_state.get(output_key, {})
+
+        if subgraph_name == "document_generation":
+            subgraph_output = {
+                "success": result_state.get("status") == "success",
+                "file": result_state.get("file_metadata", {}),
+                "document_type": result_state.get("document_type", "excel"),
+                "attempts": result_state.get("retry_count", 0) + 1,
+                "validation": result_state.get("validation_result", {}),
+                "error": result_state.get("error"),
+            }
+        else:
+            subgraph_output = result_state.get(output_key, {})
 
         LOGGER.info(
             "subgraph_router.complete",
             subgraph=subgraph_name,
             output_keys=list(subgraph_output.keys()) if isinstance(subgraph_output, dict) else [],
         )
+
 
         # Overwrite the stub ToolMessage with the actual output so the LLM can read it
         replacement_tool_msg = ToolMessage(
@@ -159,8 +189,17 @@ async def subgraph_router(state: dict) -> dict:
             name=f"invoke_{subgraph_name}",
         )
 
+        subgraph_tool_result = make_tool_result(
+            call_id=tool_call_id or tool_msg_id,
+            tool_name=f"invoke_{subgraph_name}",
+            data=subgraph_output,
+            loop_index=state.get("loop_count", 0),
+            error=subgraph_output.get("error") if isinstance(subgraph_output, dict) else None,
+        )
+
         return {
             "messages": [replacement_tool_msg],
+            "tool_results": [subgraph_tool_result],
             "subgraph_result": {
                 "subgraph_name": subgraph_name,
                 "output": subgraph_output,
@@ -168,6 +207,7 @@ async def subgraph_router(state: dict) -> dict:
             },
             "active_subgraph": "",  # Clear after execution
         }
+
 
     except Exception as exc:
         LOGGER.error(

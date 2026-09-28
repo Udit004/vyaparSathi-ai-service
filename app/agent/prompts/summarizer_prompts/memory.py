@@ -11,21 +11,19 @@ preferences and store knowledge before it enters the main LLM context.
 SUMMARIZER_MEMORY_INSTRUCTION = (
     "You are compressing long-term memory for an AI agent. "
     "Produce a compact, factual summary of the user preferences "
-    "and store knowledge below. Keep only concrete facts, "
-    "preferences, and patterns. Drop filler and duplicates. "
+    "and store knowledge below. Give STRICT HIGHER PRIORITY to facts "
+    "and preferences explicitly stated by the USER over assistant recommendations. "
+    "Keep only concrete facts, preferences, and patterns. Drop filler and duplicates. "
     "Return plain text, no markdown headers."
 )
 
 MEMORY_QUERY_INSTRUCTION = (
     "Create one concise semantic search query for retrieving relevant long-term "
-    "memory for Vyapar Copilot. Use the current user request and the assistant "
-    "scope below. Keep only stable topics, preferences, store facts, prior "
-    "decisions, and recurring patterns that could help answer the request. "
-    "Do not answer the request. Do not include IDs, secrets, refusal text, "
-    "tool instructions, or temporary numeric results. Return one plain-text "
-    "query of at most 30 words.\n\n"
-    "Assistant scope: Indian retail inventory, sales, forecasting, restocking, "
-    "operational insights, and user communication preferences."
+    "memory for Vyapar Copilot. Use the current user request below. "
+    "Keep only stable topics, preferences, store facts, prior decisions, and "
+    "recurring patterns directly relevant to the user request. "
+    "Do not include generic assistant scope text, IDs, secrets, refusal text, "
+    "or temporary numeric results. Return one plain-text query of at most 20 words."
 )
 
 MEMORY_EXTRACTION_INSTRUCTION = (

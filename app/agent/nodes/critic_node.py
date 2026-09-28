@@ -40,16 +40,28 @@ async def critic_node(state: VyaparAgentState) -> Dict[str, Any]:
         "2. Data support: Are the claims supported by the available data?\n"
         "3. Tool coverage: Were the necessary tools used?\n"
         "4. Completeness: Is any important part of the question ignored?\n"
+        "5. Document downloads: If a document generation tool ran and produced a file/download URL, check that the draft answer includes a download link.\n"
         "Do NOT invent data. Do not execute tools. Just evaluate.\n"
     )
-    
+
     tool_results = state.get("tool_results", [])
-    
+
     # Create an abbreviated context summary to avoid blowing up the context window
     context_str = "Available context summary:\n"
     for r in tool_results:
-        context_str += f"- Tool: {r.get('tool_name')} | Success: {r.get('success')}\n"
-        # We optionally add small context data here, but omit huge arrays
+        t_name = r.get("tool_name", "")
+        t_success = r.get("success", False)
+        context_str += f"- Tool: {t_name} | Success: {t_success}\n"
+
+        data = r.get("data", {})
+        if isinstance(data, dict):
+            file_info = data.get("file") if isinstance(data.get("file"), dict) else data
+            if isinstance(file_info, dict) and file_info.get("download_url"):
+                context_str += (
+                    f"  -> File Created: {file_info.get('filename')}\n"
+                    f"  -> Download URL: {file_info.get('download_url')}\n"
+                )
+
     
     user_msg = (
         f"Goal: {goal}\n\n"

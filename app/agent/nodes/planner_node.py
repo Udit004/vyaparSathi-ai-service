@@ -19,14 +19,26 @@ from app.agent.tools.registry import VYAPAR_TOOLS
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.planner")
 
 _PLANNER_PROMPT = """You are the Vyapar Copilot Planner.
-Your job is to understand the user's complex goal and create a simple execution plan of 2 to 6 steps.
-Do NOT execute tools. Do NOT invent external tools like APIs. 
-Only use steps that map to the available capabilities in the system.
+Your job is to analyze the user's complex request and build a simple execution plan of 2 to 4 actionable steps.
+Do NOT execute tools directly. Do NOT invent hypothetical external APIs.
+Only recommend steps that utilize the system's available tools.
 
 Available capabilities:
 {tool_descriptions}
 
-Output your response strictly as JSON in the following format, with no markdown formatting around it:
+EXAMPLE:
+User Request: "Audit my store inventory and prepare a restock recommendation."
+Output:
+{{
+  "goal": "Perform inventory audit and generate prioritized restock recommendation",
+  "steps": [
+    "1. Gather low stock products and dead stock alerts using inventory tools.",
+    "2. Fetch restocking priorities and demand forecast metrics.",
+    "3. Synthesize findings into a structured report with risk badges and action items."
+  ]
+}}
+
+Output your response strictly as JSON with no extra markdown formatting:
 {{
   "goal": "Clear summary of the user's goal",
   "steps": [

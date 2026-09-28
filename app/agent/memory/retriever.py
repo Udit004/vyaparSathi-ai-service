@@ -280,8 +280,8 @@ async def _reconcile_and_update_memory(
     )
 
     try:
-        from app.lib.llm import get_llm
-        llm = get_llm()
+        from app.lib.llm import get_small_llm
+        llm = get_small_llm()
         if llm:
             res = await llm.ainvoke(reconciliation_prompt)
             raw_json_str = res.content if hasattr(res, "content") else str(res)
@@ -363,8 +363,8 @@ async def extract_multi_level_memory(messages: list[dict]) -> dict[str, list[str
     )
 
     try:
-        from app.lib.llm import get_llm
-        llm = get_llm()
+        from app.lib.llm import get_small_llm
+        llm = get_small_llm()
         if llm:
             res = await llm.ainvoke(prompt)
             raw_json_str = res.content if hasattr(res, "content") else str(res)
@@ -769,12 +769,40 @@ _MAX_MEMORY_CHARS = 2_000
 _MAX_MEMORY_ENTRY_CHARS = 400
 
 
-def _cap_results(results: list[dict]) -> list[dict]:
-    """Trim memory result list to a bounded size."""
+def _sort_user_source_first(results: list[dict]) -> list[dict]:
+    """
+    Prioritize memories originating from the USER over memories from the ASSISTANT.
+    User-stated facts and preferences take strict precedence.
+    """
     if not results:
         return []
 
-    capped = list(results[:_MAX_MEMORY_ENTRIES])
+    def _sort_key(item: dict) -> tuple[int, float]:
+        meta = item.get("metadata", {}) if isinstance(item, dict) else {}
+        source_role = meta.get("source_role", "") if isinstance(meta, dict) else ""
+        mem_type = item.get("memory_type", "") if isinstance(item, dict) else ""
+
+        # Priority 0: Explicit user source or user_preference
+        if source_role == "user" or mem_type == "user_preference":
+            user_priority = 0
+        elif source_role == "assistant":
+            user_priority = 2
+        else:
+            user_priority = 1
+
+        score = item.get("score", 0.0) if isinstance(item, dict) else 0.0
+        return (user_priority, -score)
+
+    return sorted(results, key=_sort_key)
+
+
+def _cap_results(results: list[dict]) -> list[dict]:
+    """Trim memory result list to a bounded size, prioritizing user sources."""
+    if not results:
+        return []
+
+    sorted_results = _sort_user_source_first(results)
+    capped = list(sorted_results[:_MAX_MEMORY_ENTRIES])
     for i, r in enumerate(capped):
         if isinstance(r, dict):
             text = r.get("memory") or r.get("text")

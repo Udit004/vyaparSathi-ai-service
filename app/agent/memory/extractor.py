@@ -6,7 +6,7 @@ from typing import Any
 import structlog
 from pydantic import ValidationError
 
-from app.lib.llm import get_llm
+from app.lib.llm import get_small_llm
 from app.agent.memory.models import ExtractionResult, ExtractedMemory
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory.extractor")
@@ -47,7 +47,7 @@ async def extract_memories(
     if not messages:
         return []
 
-    llm = get_llm()
+    llm = get_small_llm()
     if not llm:
         LOGGER.warning("memory_extraction_skipped", reason="no LLM available")
         return []

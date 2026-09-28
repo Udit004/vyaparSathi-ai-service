@@ -131,3 +131,11 @@ class SmartRestockOutput(BaseModel):
     yellow_count: int = Field(..., description="Number of YELLOW priority items in the order.")
     order_text: str = Field(..., description="LLM-formatted human-readable restock order memo.")
     generated_at: str = Field(..., description="ISO timestamp of generation.")
+
+
+# ---------------------------------------------------------------------------
+# Web Research Subgraph
+# ---------------------------------------------------------------------------
+
+from app.agent.subgraphs.web_research.schemas import WebResearchInput, WebResearchOutput  # noqa: F401
+

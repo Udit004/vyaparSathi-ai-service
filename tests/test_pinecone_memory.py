@@ -165,7 +165,7 @@ async def test_memory_write_node(mock_process):
 @pytest.mark.asyncio
 @patch("app.agent.memory.retriever._delete_memory_vector")
 @patch("app.agent.memory.retriever._upsert_memory_vector")
-@patch("app.lib.llm.get_llm")
+@patch("app.lib.llm.get_small_llm")
 @patch("app.agent.memory.retriever._query_memory_vectors")
 async def test_reconcile_and_update_memory(mock_query, mock_get_llm, mock_upsert, mock_delete):
     from app.agent.memory import _reconcile_and_update_memory, TYPE_USER_PREFERENCE
@@ -197,7 +197,7 @@ async def test_reconcile_and_update_memory(mock_query, mock_get_llm, mock_upsert
 
 
 @pytest.mark.asyncio
-@patch("app.lib.llm.get_llm")
+@patch("app.lib.llm.get_small_llm")
 async def test_extract_multi_level_memory(mock_get_llm):
     from app.agent.memory import extract_multi_level_memory
 
