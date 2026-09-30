@@ -46,3 +46,4 @@ boto3>=1.34.0
 
 # Redis Cache & Storage
 redis>=5.0.0
+bullmq>=0.9.0
