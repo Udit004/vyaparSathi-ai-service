@@ -57,6 +57,19 @@ from app.agent.service.suppliers.search import search_suppliers
 from app.agent.service.suppliers.performance import fetch_supplier_performance
 from app.agent.service.suppliers.pricing import fetch_supplier_pricing
 
+# Buyers
+from app.agent.service.buyers.search import fetch_buyers
+from app.agent.service.buyers.dues import fetch_buyer_dues
+
+# Purchases
+from app.agent.service.purchases.summary import fetch_purchase_summary
+
+# Expenses
+from app.agent.service.expenses.summary import fetch_expense_summary
+
+# Profit & Loss
+from app.agent.service.profit_loss.report import fetch_profit_loss_report
+
 __all__ = [
     # Inventory
     "fetch_inventory_summary",
@@ -101,4 +114,17 @@ __all__ = [
     "search_suppliers",
     "fetch_supplier_performance",
     "fetch_supplier_pricing",
+
+    # Buyers
+    "fetch_buyers",
+    "fetch_buyer_dues",
+
+    # Purchases
+    "fetch_purchase_summary",
+
+    # Expenses
+    "fetch_expense_summary",
+
+    # Profit & Loss
+    "fetch_profit_loss_report",
 ]

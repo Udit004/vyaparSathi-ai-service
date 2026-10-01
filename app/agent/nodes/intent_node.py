@@ -23,6 +23,9 @@ _LIVE_TERMS = (
     "inventory", "stock", "stockout", "out of stock", "sales", "selling",
     "forecast", "forecasting", "restock", "anomaly", "store insight",
     "store summary", "store overview", "store health",
+    "buyer dues", "seller dues", "supplier dues", "buyers owe", "owe sellers",
+    "owe suppliers", "receivables", "payables", "outstanding payments",
+    "pending payments", "amount i owe",
 )
 _MEMORY_TERMS = (
     "remember", "last time", "previous", "earlier", "we decided",
@@ -113,7 +116,12 @@ def _requires_planning(prompt: str) -> bool:
 
 def _deterministic_intent(prompt: str) -> str | None:
     lowered = (prompt or "").lower().strip()
-    has_live = any(term in lowered for term in _LIVE_TERMS)
+    has_dues_request = (
+        ("buyer" in lowered or "buyers" in lowered)
+        and ("seller" in lowered or "sellers" in lowered)
+        and ("owe" in lowered or "own" in lowered)
+    )
+    has_live = any(term in lowered for term in _LIVE_TERMS) or has_dues_request
     has_memory = any(term in lowered for term in _MEMORY_TERMS)
     has_recap = any(term in lowered for term in _RECAP_TERMS)
 

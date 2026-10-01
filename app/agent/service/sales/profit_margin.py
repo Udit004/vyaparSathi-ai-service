@@ -3,15 +3,16 @@ app/agent/service/sales/profit_margin.py
 =========================================
 Per-category price margin analysis.
 
-Since the schema has:
-  - products.price        → base/cost price (master catalogue price)
-  - inventory.sellingPrice → store-specific selling price
+The schema now has:
+  - products.buyingPrice  → cost / purchase price per unit
+  - products.sellingPrice → current selling price
+  - inventory.sellingPrice → store-specific selling price (if overridden)
 
-We join these to compute:
-  estimated_margin_pct = (sellingPrice - price) / sellingPrice * 100
+We compute:
+  gross_margin_pct = (sellingPrice - buyingPrice) / sellingPrice * 100
 
-If sellingPrice is missing for a product, we fall back to the
-sale item's unitPrice (from sales records) as a proxy.
+If inventory.sellingPrice is set, we use that; otherwise we fall back to
+products.sellingPrice.
 """
 from __future__ import annotations
 
@@ -50,7 +51,7 @@ async def fetch_profit_margin_analysis(store_id: str) -> list[dict]:
     if not store_oid:
         return []
 
-    # Join products with inventory via $lookup to get sellingPrice
+    # Join products with inventory to get effective selling price
     pipeline = [
         {"$match": {"store": store_oid, "isActive": True}},
         {
@@ -63,10 +64,10 @@ async def fetch_profit_margin_analysis(store_id: str) -> list[dict]:
         },
         {
             "$addFields": {
-                "selling_price": {
+                "effective_selling_price": {
                     "$ifNull": [
                         {"$arrayElemAt": ["$inv.sellingPrice", 0]},
-                        "$price",  # fallback to product price itself
+                        "$sellingPrice",
                     ]
                 }
             }
@@ -75,8 +76,8 @@ async def fetch_profit_margin_analysis(store_id: str) -> list[dict]:
             "$group": {
                 "_id": "$category",
                 "product_count": {"$sum": 1},
-                "avg_cost_price": {"$avg": "$price"},
-                "avg_selling_price": {"$avg": "$selling_price"},
+                "avg_cost_price": {"$avg": "$buyingPrice"},
+                "avg_selling_price": {"$avg": "$effective_selling_price"},
                 "total_qty": {"$sum": "$quantity"},
             }
         },

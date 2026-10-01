@@ -58,6 +58,19 @@ from app.agent.tools.subgraphs.invoke_document_generation import invoke_document
 # Memory
 from app.agent.tools.memory.search import search_memory
 
+# Buyers
+from app.agent.tools.buyers.search import search_buyers
+from app.agent.tools.buyers.dues import get_buyer_dues
+
+# Purchases
+from app.agent.tools.purchases.summary import get_purchase_summary
+
+# Expenses
+from app.agent.tools.expenses.summary import get_expense_summary
+
+# Profit & Loss
+from app.agent.tools.profit_loss.report import get_profit_loss_report
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
@@ -121,6 +134,19 @@ VYAPAR_TOOLS = [
 
     # Memory search (agent-controlled long-term memory retrieval)
     search_memory,
+
+    # Buyers
+    search_buyers,
+    get_buyer_dues,
+
+    # Purchases
+    get_purchase_summary,
+
+    # Expenses
+    get_expense_summary,
+
+    # Profit & Loss
+    get_profit_loss_report,
 ]
 
 

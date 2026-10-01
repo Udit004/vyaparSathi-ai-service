@@ -167,6 +167,24 @@ _STORE_OVERVIEW_PHRASES = (
     "overall store",
 )
 
+_DUES_SCOPE_PHRASES = (
+    "buyer dues",
+    "seller dues",
+    "supplier dues",
+    "buyers owe",
+    "sellers owe",
+    "suppliers owe",
+    "owe buyers",
+    "owe sellers",
+    "owe suppliers",
+    "amount buyers owe",
+    "amount i owe",
+    "outstanding payments",
+    "pending payments",
+    "receivables",
+    "payables",
+)
+
 _PROMPT_INJECTION_PHRASES = (
     "ignore previous",
     "ignore all previous",
@@ -196,6 +214,12 @@ def _obvious_retail_query(prompt: str) -> bool:
         or any(phrase in lowered for phrase in _CONVERSATION_SCOPE_PHRASES)
         or any(phrase in lowered for phrase in _PREFERENCE_SCOPE_PHRASES)
         or any(phrase in lowered for phrase in _STORE_OVERVIEW_PHRASES)
+        or any(phrase in lowered for phrase in _DUES_SCOPE_PHRASES)
+        or (
+            ("buyer" in lowered or "buyers" in lowered)
+            and ("seller" in lowered or "sellers" in lowered)
+            and ("owe" in lowered or "own" in lowered)
+        )
         or ("store" in lowered and "summary" in lowered)
     )
 
