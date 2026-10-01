@@ -31,10 +31,17 @@ async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
         "Do not repeat successful work (e.g. if sales is already gathered, only gather forecast)."
     )
     
+    recent_errors = [res for res in state.get("tool_results", []) if not res.get("success")]
+    error_context = ""
+    if recent_errors:
+        error_lines = [f"Tool {r['tool_name']} failed: {r['error']}" for r in recent_errors]
+        error_context = "\nRecent Tool Failures:\n" + "\n".join(error_lines)
+    
     user_msg = (
         f"Critic Reason: {reason}\n"
-        f"Missing Information: {', '.join(missing)}\n\n"
-        "What should we do differently next?"
+        f"Missing Information: {', '.join(missing)}\n"
+        f"{error_context}\n\n"
+        "What should we do differently next? If a tool failed due to missing arguments, suggest fixing the arguments."
     )
     
     messages = [

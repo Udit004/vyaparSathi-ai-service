@@ -224,6 +224,13 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
                 "instead.\n\n"
             )
 
+    sys_content += (
+        "SELF-CORRECTION RULES:\n"
+        "- If a tool returns an error (e.g. Validation Error), DO NOT immediately retry with the exact same parameters.\n"
+        "- Analyze the error message. If it says a field is missing, find that information in your context, then retry.\n"
+        "- If the error persists, use a different tool to achieve your goal or ask the user for clarification.\n\n"
+    )
+
     # Inject clarification history if present — tells the LLM
     # that a previous clarification was answered so it can
     # incorporate that context into its reasoning.
@@ -280,6 +287,17 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
     if hasattr(response, "tool_calls") and response.tool_calls:
+        # Check circuit breaker before committing to tool calls
+        error_counts = state.get("tool_error_counts", {})
+        broken_tools = [tc["name"] for tc in response.tool_calls if error_counts.get(tc["name"], 0) >= 3]
+        if broken_tools:
+            LOGGER.warning("think_node_circuit_breaker_triggered", tools=broken_tools)
+            return {
+                "error": f"Circuit breaker triggered: Tools {broken_tools} failed repeatedly.",
+                "goal_status": "failed",
+                "final_answer": "I'm having trouble executing some operations due to repeated system errors. Please verify the information or contact support.",
+            }
+
         pending_calls = [
             ToolCall(
                 tool_name=tc["name"],

@@ -285,6 +285,13 @@ class VyaparAgentState(TypedDict):
     Consumed and cleared by: tool node.
     """
 
+    tool_error_counts: dict[str, int]
+    """
+    Tracks how many times a tool has failed.
+    Key: tool_name, Value: failure_count
+    Used for circuit breaking to prevent infinite loops.
+    """
+
     candidate_products: list[dict[str, Any]]
     """
     The results of discovery/filtering operations before detailed analysis.
@@ -706,6 +713,7 @@ def make_initial_state(
         messages=[HumanMessage(content=user_prompt)],
         # 4. Tool tracking
         pending_tool_calls=[],
+        tool_error_counts={},
         tool_results=[],
         tools_called_this_loop=[],
         available_tools=AVAILABLE_TOOLS,

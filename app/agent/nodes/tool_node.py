@@ -13,6 +13,7 @@ import structlog
 
 from app.agent.state import VyaparAgentState, make_tool_result
 from app.agent.tools.registry import get_tool_by_name
+from pydantic import ValidationError
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.tool")
 
@@ -31,6 +32,7 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
 
     results = []
     updates: Dict[str, Any] = {"pending_tool_calls": []}
+    error_counts = dict(state.get("tool_error_counts", {}))
 
     for call in pending:
         tool_name = call["tool_name"]
@@ -76,6 +78,8 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
                 loop=loop,
                 latency_ms=elapsed_ms,
             )
+
+            error_counts[tool_name] = 0
 
             results.append(
                 make_tool_result(
@@ -151,8 +155,36 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
                     updates["discovery_metrics"] = metrics
 
 
+        except ValidationError as ve:
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+            error_details = []
+            for err in ve.errors():
+                field = ".".join(str(loc) for loc in err.get("loc", []))
+                msg = err.get("msg", "Validation error")
+                error_details.append(f"Field '{field}': {msg}")
+                
+            formatted_error = f"Validation Error in {tool_name}. Please fix the following arguments:\n" + "\n".join(error_details)
+            error_counts[tool_name] = error_counts.get(tool_name, 0) + 1
+            LOGGER.warning(
+                "tool_node_validation_error",
+                tool_name=tool_name,
+                loop=loop,
+                error=formatted_error,
+                latency_ms=elapsed_ms,
+            )
+            results.append(
+                make_tool_result(
+                    call_id=call["call_id"],
+                    tool_name=tool_name,
+                    data=None,
+                    error=formatted_error,
+                    loop_index=loop,
+                )
+            )
+
         except Exception as exc:
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+            error_counts[tool_name] = error_counts.get(tool_name, 0) + 1
             LOGGER.error(
                 "tool_node_error",
                 tool_name=tool_name,
@@ -180,4 +212,5 @@ async def tool_node(state: VyaparAgentState) -> Dict[str, Any]:
     )
 
     updates["tool_results"] = results
+    updates["tool_error_counts"] = error_counts
     return updates
