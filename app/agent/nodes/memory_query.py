@@ -28,6 +28,7 @@ What this node does NOT do
 
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, Any
 
 import structlog
@@ -41,6 +42,11 @@ from app.agent.memory import (
     summarize_memory_results,
     _cap_results,
     _filter_relevant_results,
+)
+from app.agent.memory.redis_cache import (
+    get_cached_user_memory, set_cached_user_memory,
+    get_cached_store_memory, set_cached_store_memory,
+    get_cached_multi_memory, set_cached_multi_memory,
 )
 from app.agent.utils import latest_human_prompt
 
@@ -62,20 +68,31 @@ _BOOTSTRAP_CAP_MULTI = 2
 
 
 async def _bootstrap_user_memory(user_id: str, query: str) -> list[dict]:
-    """Fetch stable user preferences/facts for bootstrap."""
+    """Fetch user preferences — Redis first, Pinecone on miss."""
+    cached = await get_cached_user_memory(user_id)
+    if cached is not None:
+        LOGGER.debug("user_memory_cache_hit", user_id=user_id)
+        return cached
+
     results = await search_user_memory(user_id, query, top_k=_BOOTSTRAP_CAP_USER)
     if not results:
-        # Fallback to a general preference query
         results = await search_user_memory(
             user_id,
             "user preference language tone detail level business goals",
             top_k=_BOOTSTRAP_CAP_USER,
         )
-    return _cap_results(results)[:_BOOTSTRAP_CAP_USER]
+    final = _cap_results(results)[:_BOOTSTRAP_CAP_USER]
+    await set_cached_user_memory(user_id, final)
+    return final
 
 
 async def _bootstrap_store_memory(store_id: str, query: str, intent: str) -> list[dict]:
-    """Fetch relevant store facts / patterns for bootstrap."""
+    """Fetch store facts/patterns — Redis first, Pinecone on miss."""
+    cached = await get_cached_store_memory(store_id)
+    if cached is not None:
+        LOGGER.debug("store_memory_cache_hit", store_id=store_id)
+        return cached
+
     results = await search_store_memory(store_id, query, top_k=_BOOTSTRAP_CAP_STORE)
     if not results:
         results = await search_store_memory(
@@ -83,18 +100,19 @@ async def _bootstrap_store_memory(store_id: str, query: str, intent: str) -> lis
             "store facts supplier rules restock schedule inventory patterns",
             top_k=_BOOTSTRAP_CAP_STORE,
         )
-    # Filter out low-relevance results for non-memory intents
     if intent not in ("memory", "mixed"):
         results = _filter_relevant_results(results)
-    return _cap_results(results)[:_BOOTSTRAP_CAP_STORE]
+    final = _cap_results(results)[:_BOOTSTRAP_CAP_STORE]
+    await set_cached_store_memory(store_id, final)
+    return final
 
 
 async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     """
-    Bootstrap Memory Node.
+    Bootstrap Memory Node — Redis-cached parallel edition.
 
-    Loads a small, intent-aware set of long-term memories at graph start.
-    Runs once and is skipped on subsequent loops (already_loaded guard).
+    On cache HIT  (Redis): <100ms  (skips Pinecone entirely)
+    On cache MISS (Redis): ~8-10s  (parallel Pinecone fetch, then writes Redis)
     """
     store_id = state.get("store_id", "unknown")
     user_id = state.get("user_id", "unknown")
@@ -109,16 +127,22 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     if already_loaded:
         LOGGER.debug("bootstrap_memory_skip", reason="already_loaded", store_id=store_id)
         return {"memory_query_needed": False}
-        
+
     if intent == "greeting":
         LOGGER.debug("bootstrap_memory_skip", reason="greeting_intent", store_id=store_id)
         return {"memory_query_needed": False}
+
+    # live_data: only user prefs needed (language/tone). Skip store+multi search.
+    skip_store_memory = intent == "live_data"
+    skip_multi_store = intent not in ("memory", "mixed", "general")
 
     LOGGER.info(
         "bootstrap_memory_started",
         store_id=store_id,
         user_id=user_id,
         intent=intent,
+        skip_store=skip_store_memory,
+        skip_multi=skip_multi_store,
     )
 
     user_prompt = latest_human_prompt(
@@ -135,36 +159,54 @@ async def memory_query_node(state: VyaparAgentState) -> Dict[str, Any]:
     except Exception:
         memory_query = user_prompt[:200]
 
-    user_prefs_raw: list[dict] = []
-    store_knowledge_raw: list[dict] = []
-    multi_store_raw: list[dict] = []
-
-    # --- User memory: always load ---
-    try:
-        user_prefs_raw = await _bootstrap_user_memory(user_id, memory_query)
-    except Exception as exc:
-        LOGGER.warning("bootstrap_user_memory_failed", error=str(exc))
-
-    # --- Store memory: skip for pure live_data intent ---
-    if intent != "live_data":
+    # ── PARALLEL: fetch all three sources at once ───────────────────────────
+    async def _safe_user_mem():
         try:
-            store_knowledge_raw = await _bootstrap_store_memory(store_id, memory_query, intent)
+            return await _bootstrap_user_memory(user_id, memory_query)
+        except Exception as exc:
+            LOGGER.warning("bootstrap_user_memory_failed", error=str(exc))
+            return []
+
+    async def _safe_store_mem():
+        if skip_store_memory:
+            return []
+        try:
+            return await _bootstrap_store_memory(store_id, memory_query, intent)
         except Exception as exc:
             LOGGER.warning("bootstrap_store_memory_failed", error=str(exc))
+            return []
 
-    # --- Multi-store memory: only for mixed/memory/general ---
-    if intent in ("memory", "mixed", "general"):
+    async def _safe_multi_mem():
+        if skip_multi_store:
+            return []
         try:
-            multi_store_raw = _cap_results(
+            cached = await get_cached_multi_memory(user_id)
+            if cached is not None:
+                LOGGER.debug("multi_memory_cache_hit", user_id=user_id)
+                return cached
+                
+            results = _cap_results(
                 await search_multi_store_memory(user_id, memory_query, top_k=_BOOTSTRAP_CAP_MULTI)
             )[:_BOOTSTRAP_CAP_MULTI]
+            
+            await set_cached_multi_memory(user_id, results)
+            return results
         except Exception as exc:
             LOGGER.warning("bootstrap_multi_store_memory_failed", error=str(exc))
+            return []
 
-    # Summarize for LLM context injection
-    user_prefs_summary = await summarize_memory_results(user_prefs_raw, memory_query)
-    store_knowledge_summary = await summarize_memory_results(store_knowledge_raw, memory_query)
-    multi_store_summary = await summarize_memory_results(multi_store_raw, memory_query)
+    user_prefs_raw, store_knowledge_raw, multi_store_raw = await asyncio.gather(
+        _safe_user_mem(),
+        _safe_store_mem(),
+        _safe_multi_mem(),
+    )
+
+    # ── PARALLEL: summarize all three at once ───────────────────────────────
+    user_prefs_summary, store_knowledge_summary, multi_store_summary = await asyncio.gather(
+        summarize_memory_results(user_prefs_raw, memory_query),
+        summarize_memory_results(store_knowledge_raw, memory_query),
+        summarize_memory_results(multi_store_raw, memory_query),
+    )
 
     LOGGER.info(
         "bootstrap_memory_completed",

@@ -5,6 +5,7 @@ import structlog
 from app.agent.memory.extractor import extract_memories
 from app.agent.memory.conflict import reconcile_memory
 from app.agent.memory.writer import write_new_memory, supersede_memory, confirm_memory
+from app.agent.memory.redis_cache import invalidate_user_memory, invalidate_store_memory
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory.service")
 
@@ -82,6 +83,13 @@ async def process_and_persist_memory(
             # We treat update as a supersede for auditability
             await supersede_memory(resolution.target_id, memory, extra_metadata)
             results["updated"] += 1
+
+    if results["inserted"] > 0 or results["superseded"] > 0 or results["updated"] > 0:
+        import asyncio
+        await asyncio.gather(
+            invalidate_user_memory(user_id),
+            invalidate_store_memory(store_id)
+        )
 
     LOGGER.info("pinecone_memory_pipeline_complete", stats=results)
     return {"user_ok": True, "store_ok": True, "multi_store_ok": True}

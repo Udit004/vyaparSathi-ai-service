@@ -33,7 +33,6 @@ import asyncio
 import datetime
 import json
 import os
-import uuid
 from typing import Any, Optional
 
 import structlog
@@ -48,6 +47,7 @@ from app.agent.prompts.summarizer_prompts import (
     MULTI_LEVEL_MEMORY_EXTRACTION_INSTRUCTION,
     MEMORY_RECONCILIATION_INSTRUCTION,
 )
+from app.agent.memory.redis_cache import invalidate_user_memory, invalidate_store_memory
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.memory.pinecone")
 
@@ -504,6 +504,9 @@ async def add_user_memory(
             if not ok:
                 success_all = False
 
+    if success_all:
+        await invalidate_user_memory(str(user_id))
+
     return success_all
 
 
@@ -558,6 +561,9 @@ async def add_store_memory(
             )
             if not ok:
                 success_all = False
+
+    if success_all:
+        await invalidate_store_memory(str(store_id))
 
     return success_all
 

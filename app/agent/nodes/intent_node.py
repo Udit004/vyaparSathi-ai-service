@@ -174,17 +174,19 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         llm = get_small_llm()
         if llm:
             try:
-                # Build context from last 3 messages (excluding the latest prompt)
+                # Build context from last 6 messages (3 full user+assistant turns)
                 history_context = ""
                 messages = state.get("messages", [])
                 if len(messages) > 1:
-                    recent_msgs = messages[-4:-1]
+                    # Get last 7 messages excluding the very latest (which is the current prompt)
+                    recent_msgs = [m for m in messages[-7:-1] if hasattr(m, "type") and m.type in ("human", "ai")]
                     history_lines = []
                     for m in recent_msgs:
-                        role = "User" if m.type == "human" else "Assistant" if m.type == "ai" else m.type
-                        history_lines.append(f"{role}: {m.content}")
+                        role = "User" if m.type == "human" else "Assistant"
+                        content = m.content if isinstance(m.content, str) else str(m.content)
+                        history_lines.append(f"{role}: {content[:300]}")
                     if history_lines:
-                        history_context = "Recent Conversation History:\n" + "\n".join(history_lines) + "\n\n"
+                        history_context = "Recent Conversation (last 3 turns):\n" + "\n".join(history_lines) + "\n\n"
                         
                 classifier = llm.with_structured_output(IntentClassification)
                 response = await classifier.ainvoke(
@@ -208,6 +210,10 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
                 reason = "LLM classification failed"
 
     intent = intent or "general"
+    # Only load memory when the intent genuinely requires it.
+    # live_data / general / conversation_recap queries don't need historical memory;
+    # the actual data comes from live tools. This is the primary knob that prevents
+    # the 25-second memory_query delay for ~80% of requests.
     needs_memory = intent in {"memory", "mixed"}
 
     LOGGER.info(

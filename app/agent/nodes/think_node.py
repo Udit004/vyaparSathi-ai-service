@@ -260,7 +260,9 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     # NOTE: the summary is merged into the system prompt rather than
     # emitted as a separate SystemMessage — Gemini only allows a single
     # system instruction at position 0.
-    window_summary, recent_messages = await _sliding_window(raw_messages, keep_last=3)
+    # Sliding window: keep the last 6 messages verbatim (3 full user+assistant turns)
+    # for better continuity. Everything older is compressed into a compact summary.
+    window_summary, recent_messages = await _sliding_window(raw_messages, keep_last=6)
     if window_summary:
         sys_content = sys_content + "\n\n" + window_summary
 
