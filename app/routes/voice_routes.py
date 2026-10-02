@@ -321,14 +321,40 @@ async def voice_assistant_websocket(
                             turn_complete=server_content.get("turnComplete"),
                         )
 
-                        # Handle Audio parts
+                        # Handle Audio parts and text parts
                         if "modelTurn" in server_content:
                             for part in server_content["modelTurn"].get("parts", []):
+                                if "text" in part and part["text"]:
+                                    await websocket.send_json({
+                                        "type": "ai_text",
+                                        "text": part["text"],
+                                    })
                                 if "inlineData" in part:
                                     pcm_base64 = part["inlineData"].get("data", "")
                                     if pcm_base64:
                                         pcm_bytes = base64.b64decode(pcm_base64)
                                         await websocket.send_bytes(pcm_bytes)
+
+                        if "outputTranscription" in server_content:
+                            out_text = server_content["outputTranscription"].get("text", "")
+                            if out_text:
+                                await websocket.send_json({
+                                    "type": "ai_transcript",
+                                    "text": out_text,
+                                })
+
+                        if "inputTranscription" in server_content:
+                            in_text = server_content["inputTranscription"].get("text", "")
+                            if in_text:
+                                await websocket.send_json({
+                                    "type": "user_transcript",
+                                    "text": in_text,
+                                })
+
+                        if server_content.get("turnComplete"):
+                            await websocket.send_json({
+                                "type": "turn_complete",
+                            })
 
                     # Handle tool calls
                     if "toolCall" in data:
