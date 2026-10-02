@@ -1,61 +1,72 @@
 """
 app/agent/prompts/system_prompts/few_shot_examples.py
 ======================================================
-Few-shot examples demonstrating ideal tool call decisions and high-quality response synthesis.
+Few-shot examples demonstrating ideal proactive reasoning, memory lookups,
+tool call selection, and high-value structured synthesis for store owners.
 """
 
 from __future__ import annotations
 
-_SEP = "=" * 52
+_SEP = "=" * 54
 
 FEW_SHOT_TOOL_DECISIONS = f"""
 {_SEP}
- FEW-SHOT EXAMPLES: TOOL CALL SELECTION
+ FEW-SHOT EXAMPLES: PROACTIVE TOOL SELECTION & REASONING
 {_SEP}
-Example 1:
-User: "Give me a complete morning update on how my store is doing today."
-Decision: Call high-level subgraph tool `invoke_morning_briefing(store_id=...)`.
+Example 1: Proactive Restock & Lead-Time Reasoning
+User: "Which items are low in stock and what should I reorder today?"
+Decision: Call `get_low_stock_products()` AND `get_restock_priorities()` in parallel.
+Reasoning: Calculate burn rate against safety stock and factor in supplier lead time to prevent weekend stockouts.
 
-Example 2:
-User: "Which products are running low on stock and what should I reorder first?"
-Decision: Call `get_low_stock_products` AND `get_restock_priorities` in parallel.
+Example 2: Memory Lookup for Supplier Deals (Redis -> Pinecone)
+User: "What discount does supplier Gupta Traders give on Fortune Oil?"
+Decision: Call `search_memory(query="Gupta Traders Fortune Oil discount payment terms", scope="store")`.
+Reasoning: Look up stored supplier agreements from memory cache before asking the user or assuming default prices.
 
-Example 3:
-User: "What are the latest wholesale prices for Fortune Sunflower Oil in Delhi for 2026?"
-Decision: Call `web_research(query="Fortune Sunflower Oil wholesale price Delhi 2026", max_sources=4)`.
+Example 3: Memorizing a Store Rule / Customer Credit Note
+User: "Remember that customer Rahul Verma is not allowed any new credit until his ₹3,200 dues are settled."
+Decision: Call `remember_store_fact(content="Customer Rahul Verma credit limit is 0 / blocked until pending dues of ₹3,200 are settled", memory_type="store_fact")`.
+Reasoning: Immediately record and cache the credit rule so future billing or customer inquiries enforce this policy.
 
-Example 4:
-User: "Show me my top 5 selling products and their profit margins for this month."
-Decision: Call `get_top_selling_products(limit=5)` AND `get_profit_margin_analysis()`.
+Example 4: Comprehensive Morning Store Health Briefing
+User: "Namaste, give me a quick morning briefing on how my store did yesterday and what needs attention."
+Decision: Call `invoke_morning_briefing(store_id=...)`.
+Reasoning: Execute the morning audit subgraph to summarize sales, low stock alerts, and urgent tasks.
 
-Example 5:
-User: "Can you generate an Excel sell report for this month?"
-Decision: Call `get_sales_summary` AND `get_top_selling_products` to gather sales data, OR call `invoke_document_generation(document_type="excel", title="Monthly Sales Report", data=...)`.
+Example 5: Dead Stock Liquidation & Margin Analysis
+User: "Mera dead stock kitna hai aur profit badhane ke liye kya karun?"
+Decision: Call `get_dead_stock()` AND `get_slow_moving_products()` in parallel.
+Reasoning: Analyze stagnant capital tied up in inventory and suggest bundle promotions with top sellers.
 """
-
 
 FEW_SHOT_SYNTHESIS = f"""
 {_SEP}
- FEW-SHOT EXAMPLES: RESPONSE SYNTHESIS & FORMATTING
+ FEW-SHOT EXAMPLES: PROACTIVE RESPONSE SYNTHESIS (VOICE & CHAT)
 {_SEP}
-User Question: "What products are critical low stock and need restock?"
-Context Data:
-- Low Stock Products: [{{ "name": "Basmati Rice 5kg", "current_stock": 3, "min_threshold": 10, "unit": "bags" }}, {{ "name": "Tata Salt 1kg", "current_stock": 8, "min_threshold": 15, "unit": "packets" }}]
-- Restock Priorities: [{{ "name": "Basmati Rice 5kg", "priority": "HIGH", "recommended_qty": 20, "estimated_cost": 3000 }}, {{ "name": "Tata Salt 1kg", "priority": "MEDIUM", "recommended_qty": 50, "estimated_cost": 1000 }}]
 
-Ideal Structured Response:
-Namaste Rajesh ji! Here is your urgent stock alert and restocking action plan for today.
+--- [Example A: Proactive Restock Response (Hinglish/Hindi)] ---
+User: "Parle-G aur Amul Milk ka stock kaisa hai?"
+Context Data:
+- Parle-G 100g: Stock = 6 packets, Daily sales = 18 packets, Threshold = 15, Lead time = 2 days
+- Amul Taaza 500ml: Stock = 24 pouches, Daily sales = 10 pouches, Threshold = 10, Lead time = 1 day
+
+Ideal Proactive Response:
+Namaste Rajesh ji! Yahan aapke stock ka proactive status aur action plan hai:
 
 ### Executive Summary
-You have **2 products** at critical stock levels below your safety threshold. Immediate replenishment is recommended to prevent stockouts over the next 3 days.
+- **Parle-G 100g**: ⚠️ **[CRITICAL]** Sirf 6 packets bache hain. Aaj shaam tak stockout ho jayega.
+- **Amul Taaza 500ml**: ✅ **[HEALTHY]** 24 pouches available hain (lagbhag 2.5 din ka backup).
 
-### Stock Health & Restock Plan
-| Product Name | Current Stock | Safety Limit | Status | Recommended Order | Est. Cost |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Basmati Rice 5kg** | 3 bags | 10 bags | [CRITICAL] | 20 bags | ₹3,000 |
-| **Tata Salt 1kg** | 8 packets | 15 packets | [CRITICAL] | 50 packets | ₹1,000 |
+### Restock Recommendation
+1. **Parle-G Reorder**: Distributor ko turant **50 packets** ka order place karein (Est. ₹450). 2 din ke lead time ko dekhte hue abhi order karna zaroori hai taaki customer laut ke na jaye.
 
-### Recommended Action Steps
-1. **Place High-Priority Order for Basmati Rice**: Contact your primary grain supplier today for 20 bags (Est. ₹3,000) considering the 3-day lead time.
-2. **Top-up Tata Salt Order**: Add 50 packets of Tata Salt to your weekly FMCG distributor order.
+--- [Example B: Memory Retrieval & Credit Check (English)] ---
+User: "Can I give ₹1,500 worth of groceries on credit to Rahul Verma?"
+Memory Context: "Customer Rahul Verma credit limit is 0 / blocked until pending dues of ₹3,200 are cleared."
+
+Ideal Proactive Response:
+Namaste! According to your store credit records, **Rahul Verma already has ₹3,200 in pending dues** and is currently flagged on **Credit Hold**.
+
+### Recommendation
+I advise requesting settlement of his pending ₹3,200 balance before extending this new ₹1,500 credit to safeguard your cash flow.
 """

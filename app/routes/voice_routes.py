@@ -161,47 +161,127 @@ async def _connect_gemini_live(api_key: str, system_prompt: str):
     raise last_error or RuntimeError("Unable to establish Gemini Live websocket connection")
 
 
+from app.agent.memory.redis_cache import (
+    get_cached_store_memory,
+    get_cached_user_memory,
+    set_cached_store_memory,
+    set_cached_user_memory,
+)
+
+
 async def _bootstrap_voice_memory_context(user_id: str, store_id: str):
-    """Load voice memory safely. Pinecone failures should degrade to an empty context."""
-    try:
-        user_memories = await _bootstrap_user_memory(user_id, "user preferences and details")
-    except Exception as exc:
-        LOGGER.warning(
-            "voice_user_memory_bootstrap_failed",
-            user_id=user_id,
-            store_id=store_id,
-            error=str(exc),
-        )
-        user_memories = []
+    """
+    Multi-Tier Memory Bootstrap:
+    1. Check fast Redis cache first.
+    2. Fall back to Pinecone vector DB if cache misses.
+    3. Cache retrieved memories back into Redis for sub-millisecond future turns.
+    """
+    user_memories = None
+    store_memories = None
 
+    # 1. Check Redis Cache
     try:
-        store_memories = await _bootstrap_store_memory(store_id, "store details and facts", intent="general")
+        user_memories = await get_cached_user_memory(user_id)
+        store_memories = await get_cached_store_memory(store_id)
     except Exception as exc:
-        LOGGER.warning(
-            "voice_store_memory_bootstrap_failed",
-            user_id=user_id,
-            store_id=store_id,
-            error=str(exc),
-        )
-        store_memories = []
+        LOGGER.warning("voice_redis_cache_read_failed", error=str(exc))
 
-    return user_memories, store_memories
+    # 2. Fall back to Pinecone for user memories if not cached
+    if user_memories is None:
+        try:
+            user_memories = await _bootstrap_user_memory(user_id, "user preferences and details")
+            if user_memories:
+                await set_cached_user_memory(user_id, user_memories)
+        except Exception as exc:
+            LOGGER.warning("voice_user_memory_bootstrap_failed", user_id=user_id, error=str(exc))
+            user_memories = []
+
+    # 3. Fall back to Pinecone for store memories if not cached
+    if store_memories is None:
+        try:
+            store_memories = await _bootstrap_store_memory(store_id, "store details and facts", intent="general")
+            if store_memories:
+                await set_cached_store_memory(store_id, store_memories)
+        except Exception as exc:
+            LOGGER.warning("voice_store_memory_bootstrap_failed", store_id=store_id, error=str(exc))
+            store_memories = []
+
+    return user_memories or [], store_memories or []
 
 
 def _build_voice_system_prompt(user_id: str, store_id: str, memory_context: str):
-    """Build the voice prompt with immutable tenant context for tool calls."""
-    return (
-        "You are Vyapar Sathi, a helpful business assistant. "
-        "Keep responses short, natural, and conversational for voice. "
-        "Respond only in English or Hindi. Match the user's language when it is clear; "
-        "if the language is unclear, use simple English. Do not respond in any other language. "
-        "The active session context is immutable: "
-        f"user_id={user_id}; store_id={store_id}. "
-        "For every tool call that accepts store_id, use exactly this store_id. "
-        "For every tool call that accepts user_id, use exactly this user_id. "
-        "Never invent, omit, or ask the user for these IDs. "
-        f"{memory_context}"
-    )
+    """
+    Build the voice assistant system prompt with role allocation, proactive reasoning,
+    memory tool guidelines, and few-shot voice conversational examples.
+    """
+    return f"""You are Vyapar Sathi (व्यापार साथी) — an expert, proactive AI Retail Business Partner and Inventory Co-Pilot for Indian store owners.
+
+==================================================
+ROLE & PERSONALITY
+==================================================
+- Tone: Warm, energetic, sharp, decisive, and natural (like a smart, trusted business partner).
+- Language: Speak fluent natural Hinglish, Hindi, or English matching the store owner's speech.
+- Brevity for Voice: Keep voice responses concise, punchy, and conversational (1 to 3 short sentences per turn).
+- Monetary Values: Always express money in Rupees (₹), e.g., "₹450", "₹1,200".
+
+==================================================
+PROACTIVE REASONING FOR STORE OWNERS
+==================================================
+1. Do not just report raw numbers passively — explain what they mean for business:
+   - When stock is low, calculate the daily burn rate, factor in distributor lead time (usually 2-3 days), and recommend exact reorder quantities.
+   - When asked about fast-moving items or revenue, highlight profit margins and stockout prevention.
+2. Memory Tools (Redis & Pinecone):
+   - When the user asks about past decisions, supplier discounts, or customer credit rules, call `search_memory`.
+   - When the owner tells you a new business rule, supplier term, or customer preference (e.g. "Do not give credit to Ramesh"), call `remember_store_fact` immediately to memorize and cache it.
+3. Inventory Control:
+   - When the owner asks to add stock, update prices, or adjust products, execute the tool and confirm clearly.
+
+==================================================
+IMMUTABLE SESSION CONTEXT
+==================================================
+user_id={user_id}
+store_id={store_id}
+For every tool call, use exactly this store_id and user_id.
+
+==================================================
+STORE MEMORY BANK (REDIS & PINECONE)
+==================================================
+{memory_context}
+
+==================================================
+FEW-SHOT VOICE CONVERSATIONAL EXAMPLES
+==================================================
+[Example 1: Proactive Restock with Lead-Time Warning]
+Owner: "Kitna Parle-G bacha hai dukaan me?"
+Assistant: (Calls get_product_details) -> "Aapke paas Parle-G ke sirf 6 packets bache hain aur roz lagbhag 15 packets bikte hain. Distributor ko turant 50 packets ka order de dein taaki shaam tak stockout na ho."
+
+[Example 2: Memory Recall for Supplier Pricing]
+Owner: "Fortune Oil kaunse supplier se lena chahiye?"
+Assistant: (Calls search_memory) -> "Gupta Traders aapko 10 dabbe lene par 4% cash discount dete hain aur 2 din me delivery kar dete hain. Unhe order karna best rahega."
+
+[Example 3: Memorizing a Business Rule]
+Owner: "Yaad rakhna ki Suresh bhai ko ab udhaar mat dena."
+Assistant: (Calls remember_store_fact) -> "Samajh gaya ji! Suresh bhai ke account par credit lock note kar liya hai. Aage se koi naya udhaar allow nahi hoga."
+"""
+
+
+def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
+    if fn_name == "search_memory":
+        q = args.get("query", "")
+        return (f"Searching store memory for '{q[:30]}'...", "Memory retrieved!")
+    elif fn_name == "remember_store_fact":
+        return ("Saving new fact to store memory...", "Memory saved and cached!")
+    elif fn_name in ("get_low_stock_products", "get_inventory_summary"):
+        return ("Scanning inventory levels...", "Inventory data ready!")
+    elif fn_name in ("get_sales_summary", "get_daily_sales_trend", "get_top_selling_products"):
+        return ("Analyzing sales performance...", "Sales analytics ready!")
+    elif fn_name in ("get_demand_forecast", "get_restock_priorities"):
+        return ("Calculating demand forecast...", "Forecast complete!")
+    elif fn_name == "tool_update_product":
+        return (f"Updating product {args.get('name', '')}...", "Product updated!")
+    else:
+        clean_name = fn_name.replace("get_", "").replace("tool_", "").replace("_", " ").title()
+        return (f"Executing {clean_name}...", f"{clean_name} complete!")
 
 
 @router.websocket("/ws/voice")
@@ -366,6 +446,15 @@ async def voice_assistant_websocket(
                             fn_args = fn.get("args", {})
                             fn_id = fn.get("id", fn_name)
                             LOGGER.info("voice_tool_call", tool=fn_name, args=fn_args)
+
+                            start_label, complete_label = _get_tool_status_label(fn_name, fn_args)
+                            # Notify client that tool execution has started
+                            await websocket.send_json({
+                                "type": "tool_start",
+                                "tool": fn_name,
+                                "label": start_label,
+                            })
+
                             try:
                                 tool = get_tool_by_name(fn_name)
                                 if tool:
@@ -378,6 +467,13 @@ async def voice_assistant_websocket(
                             except Exception as exc:
                                 LOGGER.error("voice_tool_error", tool=fn_name, error=str(exc), exc_info=True)
                                 result = f"Error executing {fn_name}: {exc}"
+
+                            # Notify client that tool execution is complete
+                            await websocket.send_json({
+                                "type": "tool_complete",
+                                "tool": fn_name,
+                                "label": complete_label,
+                            })
 
                             tool_responses.append({
                                 "id": fn_id,

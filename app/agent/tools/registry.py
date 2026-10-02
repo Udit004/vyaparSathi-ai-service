@@ -56,7 +56,7 @@ from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_
 from app.agent.tools.subgraphs.invoke_document_generation import invoke_document_generation
 
 # Memory
-from app.agent.tools.memory.search import search_memory
+from app.agent.tools.memory.search import search_memory, remember_store_fact
 
 # Buyers
 from app.agent.tools.buyers.search import search_buyers
@@ -140,8 +140,9 @@ VYAPAR_TOOLS = [
     invoke_smart_restock_order,
     invoke_document_generation,
 
-    # Memory search (agent-controlled long-term memory retrieval)
+    # Memory (multi-tier Redis + Pinecone memory tools)
     search_memory,
+    remember_store_fact,
 
     # Buyers
     search_buyers,
