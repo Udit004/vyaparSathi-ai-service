@@ -16,9 +16,10 @@ async def fetch_product_details(store_id: str, product_id: str) -> Dict[str, Any
     LOGGER.info("fetch_product_details_start", store_id=store_id, product_id=product_id)
 
     try:
+        import re
         query_target = (product_id or "").strip()
         or_clauses: list[dict] = [
-            {"name": {"$regex": f"^{query_target}$", "$options": "i"}},
+            {"name": {"$regex": f"^{re.escape(query_target)}$", "$options": "i"}},
             {"sku": query_target},
         ]
         try:
@@ -27,6 +28,13 @@ async def fetch_product_details(store_id: str, product_id: str) -> Dict[str, Any
             pass
 
         doc = await db["products"].find_one({"$or": or_clauses})
+        if not doc and query_target:
+            # Fallback to case-insensitive substring match
+            doc = await db["products"].find_one({
+                "isActive": {"$ne": False},
+                "name": {"$regex": re.escape(query_target), "$options": "i"},
+            })
+
         if doc:
             return {
                 "product_id": str(doc["_id"]),

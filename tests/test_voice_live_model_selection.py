@@ -54,3 +54,27 @@ def test_voice_prompt_contains_exact_session_ids_for_tool_calls():
     assert "store_id=store-456" in prompt
     assert "use exactly this store_id" in prompt
 
+
+def test_voice_prompt_enforces_behavioral_specifications():
+    prompt = _build_voice_system_prompt("user-123", "store-456", "memory")
+
+    # 1. Proactive & No blind execution
+    assert "PROACTIVE HUMAN OPERATIONS ASSISTANT" in prompt
+    assert "Never blindly execute an action" in prompt
+    assert "Never invent or default" in prompt.lower() or "Never Invent or Default" in prompt
+
+    # 2. Read vs Write gating
+    assert "READ-ONLY ACTIONS (NO CONFIRMATION NEEDED)" in prompt
+    assert "STATE-CHANGING / MUTATION ACTIONS (EXPLICIT CONFIRMATION MANDATORY)" in prompt
+    assert "tool_create_purchase" in prompt
+    assert "tool_receive_purchase" in prompt
+
+    # 3. Separation of Purchase vs Receipt vs Inventory vs Email
+    assert "Purchase Created ≠ Purchase Received ≠ Inventory Updated ≠ Email Sent" in prompt
+
+    # 4. Strict Validation & Handling 'No'
+    assert "Strict Sanity Validation" in prompt
+    assert "Handling Rejection" in prompt
+    assert "Entity Disambiguation" in prompt
+
+
