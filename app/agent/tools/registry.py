@@ -92,7 +92,12 @@ from app.agent.tools.sellers.write import tool_create_seller, tool_update_seller
 # Purchases
 from app.agent.tools.purchases.summary import get_purchase_summary
 from app.agent.tools.purchases.search import search_purchases
-from app.agent.tools.purchases.write import tool_create_purchase, tool_update_purchase, tool_delete_purchase
+from app.agent.tools.purchases.write import (
+    tool_create_purchase,
+    tool_receive_purchase,
+    tool_update_purchase,
+    tool_delete_purchase,
+)
 
 # Expenses
 from app.agent.tools.expenses.summary import get_expense_summary
@@ -201,6 +206,7 @@ VYAPAR_TOOLS = [
     get_purchase_summary,
     search_purchases,
     tool_create_purchase,
+    tool_receive_purchase,
     tool_update_purchase,
     tool_delete_purchase,
 

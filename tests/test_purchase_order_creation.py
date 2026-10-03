@@ -50,3 +50,30 @@ async def test_tool_create_purchase():
         assert res["grand_total"] == 560.0
         assert "Global Traders" in res["summary"]
         assert "Tata Salt 1kg" in res["summary"]
+        assert res["stock_updated"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_receive_purchase():
+    from app.agent.tools.purchases.write import tool_receive_purchase
+
+    fake_receive_res = {
+        "success": True,
+        "purchase_id": "60d5ec49f1b2c8b1f8e4e1a1",
+        "invoice_number": "PO-20261003-ABCD",
+        "items_count": 1,
+        "items": [{"product_name": "Tata Salt 1kg", "quantity_added": 20.0}],
+        "message": "Successfully received 1 items from purchase order PO-20261003-ABCD and added them to store inventory!",
+    }
+
+    with patch("app.agent.tools.purchases.write.receive_purchase_order_stock", new_callable=AsyncMock, return_value=fake_receive_res):
+        res = await tool_receive_purchase.ainvoke({
+            "purchase_identifier": "PO-20261003-ABCD",
+            "store_id": "store_123",
+            "user_id": "user_456",
+        })
+
+        assert res["success"] is True
+        assert res["invoice_number"] == "PO-20261003-ABCD"
+        assert "Successfully received" in res["summary"]
+

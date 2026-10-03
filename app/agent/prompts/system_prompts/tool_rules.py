@@ -43,4 +43,11 @@ TOOL_SELECTION_RULES = f"""
      - If the user has NOT explicitly specified the language (English, Hindi, or Hinglish) in their current turn, DO NOT dispatch `send_store_email` immediately.
      - FIRST ASK the user: "Aap ye email kaunsi language me bhejna chahte hain — English, Hindi, ya Hinglish?" (or in English: "Which language would you like me to send this email in: English, Hindi, or Hinglish?").
      - Once the user confirms the language (or if they already specified it, e.g. "Send PO in Hindi to supplier"): call `send_store_email` with `language="<chosen_language>"` and format the subject and body in that chosen language.
+
+7. PURCHASE ORDERS & INVENTORY STOCK RECEIPT:
+   - When placing, creating, or emailing a Purchase Order (e.g. `tool_create_purchase` or `send_store_email`):
+     - The order is recorded on the Purchases & Sellers pages with status 'ordered'.
+     - CRITICAL: Inventory stock is NOT added yet because the physical goods are in transit.
+   - ONLY when the user explicitly confirms that the order or goods have arrived / been received (e.g. "I received the order PO-...", "Goods have arrived", "Maal receive ho gaya hai, stock me add kar do"):
+     - Call `tool_receive_purchase` with `purchase_identifier` (e.g. "PO-20261003-ADF4") to increment product quantities and update inventory levels.
 """

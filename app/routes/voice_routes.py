@@ -288,7 +288,9 @@ PROACTIVE REASONING & INVENTORY MANAGEMENT
    - When the owner asks to set the absolute stock count explicitly (e.g. "Dukaan me exact 50 piece bache hain count set kar do"): Use `quantity=50` in `tool_update_product`.
    - When asked to update prices or other details, use `tool_update_product`.
 3. Purchases & Supplier Orders:
-   - When the owner asks to place an order or record a purchase: execute `tool_create_purchase`.
+   - When the owner asks to place an order or record a purchase: execute `tool_create_purchase`. It records the order on the Purchases & Sellers pages with status 'ordered'.
+   - CRITICAL STOCK RULE: Placing or emailing a purchase order does NOT increment physical store inventory yet (goods are in transit).
+   - ONLY when the owner explicitly tells you that the order or goods have arrived / been received (e.g. "I received the order PO-...", "Maal receive ho gaya hai, stock me add kar do", "Add items from PO-XXX into stock", "PO-20261003-ADF4 ka delivery aa gaya"): execute `tool_receive_purchase` with `purchase_identifier="PO-20261003-ADF4"` to increment the product stock and mark the PO as 'received'.
    - When the owner asks what products are in a purchase order, what needs to be ordered, or inquires about a PO (e.g. "PO-20261003-ADF4 me kaunse products hain?", "Iss PO se kya order karna hai?"):
      First call `search_purchases` with `query="PO-20261003-ADF4"`. If not found or if it was a draft restock order, call `read_scratchpad_notes` with `query="PO-20261003-ADF4"`. Explicitly list the product names, quantities, and supplier details.
    - When the owner asks to email a purchase order or message to a supplier/seller (e.g. "Ye PO Ramesh Traders ko bhej do", "Supplier ko mail kar do"):
@@ -354,11 +356,11 @@ Assistant: (Calls create_smart_purchase_order) -> "Maine 3-day lead time ke hisa
 Owner: "Haan, ye PO ramesh.traders@gmail.com par bhej do."
 Assistant: "Aap ye email Ramesh Traders ko kaunsi language me bhejna chahte hain — English, Hindi, ya Hinglish?"
 Owner: "Hindi me bhej do."
-Assistant: (Calls send_store_email with recipient_email="ramesh.traders@gmail.com", language="Hindi") -> "Maine Ramesh Traders ko Hindi me Purchase Order email kar diya hai. Ye purchase order aapke Purchases page par record ho chuka hai aur stock sync ho gaya hai."
+Assistant: (Calls send_store_email with recipient_email="ramesh.traders@gmail.com", language="Hindi") -> "Maine Ramesh Traders ko Hindi me Purchase Order email kar diya hai. Ye purchase order aapke Purchases & Sellers pages par record ho chuka hai."
 
 [Example 7: Placing an Order / Purchasing from a Seller]
 Owner: "Global Traders se 20 packets Tata Salt order kar do."
-Assistant: (Calls tool_create_purchase) -> "Maine Global Traders se 20 packets Tata Salt ka ₹560 ka purchase order place kar diya hai. Stock update ho gaya hai aur ye aapke Purchases page par dikhai de raha hai."
+Assistant: (Calls tool_create_purchase) -> "Maine Global Traders se 20 packets Tata Salt ka ₹560 ka purchase order record kar diya hai. Ye aapke Purchases aur Sellers page par update ho chuka hai. Delivery aane par mujhe batayein taaki main stock me add kar sakun."
 
 [Example 8: Adding Stock to Existing Inventory]
 Owner: "Coca-Cola me 20 piece aur add kar do."
@@ -371,13 +373,20 @@ Assistant: (Calls tool_update_purchase with purchase_identifier="PO-20261003-ADF
 [Example 10: Inspecting Products in a Purchase Order / PO Number]
 Owner: "PO-20261003-ADF4 me kaunsa product order karna hai?"
 Assistant: (Calls search_purchases with query="PO-20261003-ADF4", or read_scratchpad_notes with query="PO-20261003-ADF4") -> "PO-20261003-ADF4 me aapke paas 50 packets Tata Salt (₹28/unit) aur 20 packets Fortune Oil (₹145/unit) hain, kul total ₹4,300 Tiwari Traders ke naam par hai."
+
+[Example 11: Receiving Shipment & Updating Stock]
+Owner: "PO-20261003-ADF4 ka maal dukaan par receive ho gaya hai, stock me add kar do."
+Assistant: (Calls tool_receive_purchase with purchase_identifier="PO-20261003-ADF4") -> "PO-20261003-ADF4 ka stock receive mark kar diya gaya hai. 50 packets Tata Salt aur 20 packets Fortune Oil aapke inventory stock me add ho chuke hain!"
 """
 
 
 def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
     if fn_name == "tool_create_purchase":
         s = args.get("seller_name", "seller")
-        return (f"Recording official purchase order from {s} & updating inventory...", "Purchase order created & added to Purchases page!")
+        return (f"Recording official purchase order from {s} in Purchases & Sellers pages...", "Purchase order created & added to Purchases page!")
+    elif fn_name == "tool_receive_purchase":
+        p = args.get("purchase_identifier", "invoice")
+        return (f"Receiving purchase order {p} & adding items to inventory stock...", f"Purchase order {p} received and stock updated!")
     elif fn_name == "tool_update_purchase":
         p = args.get("purchase_identifier", "invoice")
         return (f"Updating purchase order {p}...", "Purchase order updated successfully!")

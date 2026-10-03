@@ -17,8 +17,10 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
+from bson import ObjectId
 import structlog
 
+from app.config.database import get_database
 from app.agent.service.inventory.low_stock import fetch_low_stock_products
 from app.agent.service.forecast.restock import fetch_restock_priorities
 from app.agent.memory.redis_cache import get_redis

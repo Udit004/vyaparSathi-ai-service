@@ -39,10 +39,12 @@ async def create_purchase_order_record(
     paid_amount: float = 0.0,
     payment_status: str = "",
     notes: str = "",
+    received_into_stock: bool = False,
 ) -> dict:
     """
     Creates a persistent purchase order document in MongoDB `purchases`,
-    increments stock in `products` & `inventories`, and updates `sellers` totalPurchase/totalDue.
+    updates `sellers` totalPurchase/totalDue, and optionally increments stock in `products` & `inventories`
+    only when `received_into_stock` is True (e.g. when physical shipment has arrived).
     """
     db = get_database()
     store_oid = await _resolve_store_id(db, store_id)
@@ -204,6 +206,8 @@ async def create_purchase_order_record(
         "paidAmount": paid,
         "dueAmount": due,
         "paymentStatus": status,
+        "stockUpdated": bool(received_into_stock),
+        "orderStatus": "received" if received_into_stock else "ordered",
         "notes": notes or f"Ordered via Vyapar Sathi AI on {datetime.now().strftime('%d %b %Y, %I:%M %p')}",
         "createdAt": datetime.now(timezone.utc),
         "updatedAt": datetime.now(timezone.utc),
@@ -211,35 +215,36 @@ async def create_purchase_order_record(
 
     result = await db["purchases"].insert_one(purchase_doc)
     purchase_id = str(result.inserted_id)
-    LOGGER.info("purchase_order_created", purchase_id=purchase_id, invoice=inv_num, store_id=store_id)
+    LOGGER.info("purchase_order_created", purchase_id=purchase_id, invoice=inv_num, store_id=store_id, stock_updated=received_into_stock)
 
-    # 5. Increment product stock & sync inventory
-    for pi in purchase_items:
-        p_oid = pi["product"]
-        qty = pi["quantity"]
-        # Increment quantity on product
-        await db["products"].update_one(
-            {"_id": p_oid, "store": store_oid},
-            {"$inc": {"quantity": qty}, "$set": {"updatedAt": datetime.now(timezone.utc)}}
-        )
-        # Update inventory record
-        inv = await db["inventories"].find_one({"store": store_oid, "product": p_oid})
-        if inv:
-            new_qty = inv.get("quantity", 0) + qty
-            min_stock = inv.get("minStockLevel", 10)
-            await db["inventories"].update_one(
-                {"_id": inv["_id"]},
-                {
-                    "$inc": {"quantity": qty},
-                    "$set": {
-                        "isOutOfStock": new_qty <= 0,
-                        "isLowStock": 0 < new_qty <= min_stock,
-                        "updatedAt": datetime.now(timezone.utc),
-                    }
-                }
+    # 5. Increment product stock & sync inventory ONLY IF physically received into stock
+    if received_into_stock:
+        for pi in purchase_items:
+            p_oid = pi["product"]
+            qty = pi["quantity"]
+            # Increment quantity on product
+            await db["products"].update_one(
+                {"_id": p_oid, "store": store_oid},
+                {"$inc": {"quantity": qty}, "$set": {"updatedAt": datetime.now(timezone.utc)}}
             )
+            # Update inventory record
+            inv = await db["inventories"].find_one({"store": store_oid, "product": p_oid})
+            if inv:
+                new_qty = inv.get("quantity", 0) + qty
+                min_stock = inv.get("minStockLevel", 10)
+                await db["inventories"].update_one(
+                    {"_id": inv["_id"]},
+                    {
+                        "$inc": {"quantity": qty},
+                        "$set": {
+                            "isOutOfStock": new_qty <= 0,
+                            "isLowStock": 0 < new_qty <= min_stock,
+                            "updatedAt": datetime.now(timezone.utc),
+                        }
+                    }
+                )
 
-    # 6. Update seller financial totals
+    # 6. Update seller financial totals (Purchases & Sellers dashboard sync)
     await db["sellers"].update_one(
         {"_id": seller_oid, "store": store_oid},
         {
@@ -522,4 +527,96 @@ async def delete_purchase_order_record(store_id: str, purchase_identifier: str) 
         "purchase_id": str(p_oid),
         "invoice_number": inv_num,
         "message": f"Successfully deleted purchase order {inv_num} and restored product stock.",
+    }
+
+
+async def receive_purchase_order_stock(
+    store_id: str,
+    purchase_identifier: str,
+) -> dict:
+    """
+    Marks a purchase order as received and increments product & inventory stock levels
+    when the merchant explicitly confirms the order/goods have physically arrived.
+    """
+    db = get_database()
+    store_oid = await _resolve_store_id(db, store_id)
+    if not store_oid:
+        raise ValueError(f"Store '{store_id}' not found.")
+
+    purchase_doc = await _find_purchase_by_identifier(db, store_oid, purchase_identifier)
+    if not purchase_doc:
+        raise ValueError(f"Purchase order '{purchase_identifier}' not found in store records.")
+
+    p_oid = purchase_doc["_id"]
+    inv_num = purchase_doc.get("invoiceNumber", str(p_oid))
+    items = purchase_doc.get("items", [])
+
+    if purchase_doc.get("stockUpdated"):
+        return {
+            "success": True,
+            "already_received": True,
+            "purchase_id": str(p_oid),
+            "invoice_number": inv_num,
+            "message": f"Purchase order {inv_num} was already received and added into inventory earlier.",
+            "items": [
+                {
+                    "product_name": it.get("productName") or it.get("name", "Product"),
+                    "quantity_added": it.get("quantity", 0),
+                }
+                for it in items
+            ],
+        }
+
+    received_items_summary = []
+    for it in items:
+        p_oid_item = it.get("product")
+        qty = float(it.get("quantity", 0))
+        p_name = it.get("productName") or it.get("name", "Product")
+
+        if p_oid_item and qty > 0:
+            await db["products"].update_one(
+                {"_id": p_oid_item, "store": store_oid},
+                {"$inc": {"quantity": qty}, "$set": {"updatedAt": datetime.now(timezone.utc)}}
+            )
+            inv = await db["inventories"].find_one({"store": store_oid, "product": p_oid_item})
+            if inv:
+                new_qty = inv.get("quantity", 0) + qty
+                min_stock = inv.get("minStockLevel", 10)
+                await db["inventories"].update_one(
+                    {"_id": inv["_id"]},
+                    {
+                        "$inc": {"quantity": qty},
+                        "$set": {
+                            "isOutOfStock": new_qty <= 0,
+                            "isLowStock": 0 < new_qty <= min_stock,
+                            "updatedAt": datetime.now(timezone.utc),
+                        }
+                    }
+                )
+
+        received_items_summary.append({
+            "product_name": p_name,
+            "quantity_added": qty,
+        })
+
+    await db["purchases"].update_one(
+        {"_id": p_oid},
+        {
+            "$set": {
+                "stockUpdated": True,
+                "orderStatus": "received",
+                "receivedAt": datetime.now(timezone.utc),
+                "updatedAt": datetime.now(timezone.utc),
+            }
+        }
+    )
+    LOGGER.info("purchase_order_stock_received", purchase_id=str(p_oid), invoice=inv_num, items_count=len(received_items_summary))
+
+    return {
+        "success": True,
+        "purchase_id": str(p_oid),
+        "invoice_number": inv_num,
+        "items_count": len(received_items_summary),
+        "items": received_items_summary,
+        "message": f"Successfully received {len(received_items_summary)} items from purchase order {inv_num} and added them to store inventory!",
     }
