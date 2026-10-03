@@ -179,8 +179,9 @@ async def read_scratchpad_notes(
         if category and n.get("category") != category:
             continue
         if query:
-            q_lower = query.lower()
-            t_lower = (n.get("title", "") + " " + n.get("content", "")).lower()
+            q_lower = query.lower().strip()
+            draft_str = json.dumps(n.get("draft_data", {})) if isinstance(n.get("draft_data"), (dict, list)) else ""
+            t_lower = (n.get("title", "") + " " + n.get("content", "") + " " + draft_str).lower()
             if q_lower not in t_lower:
                 continue
         filtered.append(n)

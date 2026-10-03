@@ -37,4 +37,10 @@ TOOL_SELECTION_RULES = f"""
 5. AMBIGUITY & CLARIFICATION:
    - If the user request lacks essential parameters (e.g. unspecified product category or conflicting parameters) and cannot be answered with available tools, call `ask_for_clarification`.
    - Do NOT guess missing critical parameters when precision is required.
+
+6. EMAIL DISPATCH & SELLER COMMUNICATION (MANDATORY LANGUAGE CONFIRMATION):
+   - When the user asks to send an email or Purchase Order to a seller/supplier (e.g. "Send this PO to Ramesh Traders", "Seller ko mail bhej do", "Email invoice to supplier"):
+     - If the user has NOT explicitly specified the language (English, Hindi, or Hinglish) in their current turn, DO NOT dispatch `send_store_email` immediately.
+     - FIRST ASK the user: "Aap ye email kaunsi language me bhejna chahte hain — English, Hindi, ya Hinglish?" (or in English: "Which language would you like me to send this email in: English, Hindi, or Hinglish?").
+     - Once the user confirms the language (or if they already specified it, e.g. "Send PO in Hindi to supplier"): call `send_store_email` with `language="<chosen_language>"` and format the subject and body in that chosen language.
 """

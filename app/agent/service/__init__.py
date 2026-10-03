@@ -67,6 +67,7 @@ from app.agent.service.sellers.search import fetch_sellers
 # Purchases
 from app.agent.service.purchases.summary import fetch_purchase_summary
 from app.agent.service.purchases.search import fetch_purchases
+from app.agent.service.purchases.write import create_purchase_order_record
 
 # Expenses
 from app.agent.service.expenses.summary import fetch_expense_summary
@@ -129,6 +130,7 @@ __all__ = [
     # Purchases
     "fetch_purchase_summary",
     "fetch_purchases",
+    "create_purchase_order_record",
 
     # Expenses
     "fetch_expense_summary",

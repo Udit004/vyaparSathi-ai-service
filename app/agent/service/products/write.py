@@ -89,70 +89,158 @@ async def create_product(store_id: str, data: dict, created_by: str) -> str:
     return str(product_id)
 
 
-async def update_product(store_id: str, product_id: str, data: dict) -> bool:
-    """Updates Product and syncs fields to Inventory if applicable."""
+import re
+
+
+async def update_product(store_id: str, product_id: str = None, data: dict = None) -> dict:
+    """
+    Updates Product and syncs fields to Inventory.
+    Supports setting absolute quantity or adding relative quantity (add_quantity).
+    Automatically resolves product by ID or by name.
+    """
+    if data is None:
+        data = {}
+
     db = get_database()
     store_oid = await _resolve_store_id(db, store_id)
     if not store_oid:
         raise ValueError(f"Store {store_id} not found.")
 
-    try:
-        prod_oid = ObjectId(product_id)
-    except InvalidId:
-        raise ValueError("Invalid product ID.")
+    products_col = db["products"]
+    inventories_col = db["inventories"]
 
-    # 1. Update Product fields
+    prod_doc = None
+    prod_oid = None
+
+    # 1. Try finding product by ObjectId
+    if product_id:
+        try:
+            prod_oid = ObjectId(product_id)
+            prod_doc = await products_col.find_one({"_id": prod_oid, "store": store_oid})
+        except (InvalidId, TypeError):
+            prod_oid = None
+
+    # 2. Try finding product by name or alias if not found by ObjectId
+    if not prod_doc:
+        search_name = (data.get("product_name") or product_id or data.get("name") or "").strip()
+        if search_name:
+            # Exact regex match (case-insensitive)
+            prod_doc = await products_col.find_one({
+                "store": store_oid,
+                "name": {"$regex": f"^{re.escape(search_name)}$", "$options": "i"},
+                "isActive": {"$ne": False}
+            })
+            if not prod_doc:
+                # Partial regex match
+                prod_doc = await products_col.find_one({
+                    "store": store_oid,
+                    "name": {"$regex": re.escape(search_name), "$options": "i"},
+                    "isActive": {"$ne": False}
+                })
+
+    if not prod_doc:
+        identifier = product_id or data.get("product_name") or data.get("name") or "unknown"
+        raise ValueError(f"Product '{identifier}' not found in store.")
+
+    prod_oid = prod_doc["_id"]
+    prod_name = prod_doc.get("name", "Product")
+    previous_qty = float(prod_doc.get("quantity") or 0.0)
+
+    # 3. Handle Product fields
     prod_fields = {}
-    if "name" in data: prod_fields["name"] = data["name"]
-    if "brand" in data: prod_fields["brand"] = data["brand"]
-    if "category" in data: prod_fields["category"] = data["category"]
-    if "selling_price" in data: prod_fields["sellingPrice"] = float(data["selling_price"])
-    if "buying_price" in data: prod_fields["buyingPrice"] = float(data["buying_price"])
-    if "quantity" in data: prod_fields["quantity"] = float(data["quantity"])
-    if "unit" in data: prod_fields["unit"] = data["unit"]
-    if "barcode" in data: prod_fields["barcode"] = data["barcode"]
-    if "sku" in data: prod_fields["sku"] = data["sku"]
-    if "is_active" in data: prod_fields["isActive"] = data["is_active"]
+    if "name" in data and data["name"]:
+        prod_fields["name"] = data["name"]
+    if "brand" in data:
+        prod_fields["brand"] = data["brand"]
+    if "category" in data:
+        prod_fields["category"] = data["category"]
+    if "selling_price" in data and data["selling_price"] is not None:
+        prod_fields["sellingPrice"] = float(data["selling_price"])
+    if "buying_price" in data and data["buying_price"] is not None:
+        prod_fields["buyingPrice"] = float(data["buying_price"])
+
+    # Check for relative stock addition vs absolute override
+    added_delta = None
+    new_calculated_qty = None
+
+    if "add_quantity" in data and data["add_quantity"] is not None:
+        added_delta = float(data["add_quantity"])
+        new_calculated_qty = max(0.0, previous_qty + added_delta)
+        prod_fields["quantity"] = new_calculated_qty
+    elif "quantity_to_add" in data and data["quantity_to_add"] is not None:
+        added_delta = float(data["quantity_to_add"])
+        new_calculated_qty = max(0.0, previous_qty + added_delta)
+        prod_fields["quantity"] = new_calculated_qty
+    elif "quantity" in data and data["quantity"] is not None:
+        new_calculated_qty = max(0.0, float(data["quantity"]))
+        prod_fields["quantity"] = new_calculated_qty
+
+    if "unit" in data:
+        prod_fields["unit"] = data["unit"]
+    if "barcode" in data:
+        prod_fields["barcode"] = data["barcode"]
+    if "sku" in data:
+        prod_fields["sku"] = data["sku"]
+    if "is_active" in data and data["is_active"] is not None:
+        prod_fields["isActive"] = data["is_active"]
     if "exp_date" in data:
         prod_fields["expDate"] = datetime.fromisoformat(data["exp_date"].replace("Z", "+00:00")) if data["exp_date"] else None
 
     if prod_fields:
         prod_fields["updatedAt"] = datetime.now(timezone.utc)
-        await db["products"].update_one(
+        await products_col.update_one(
             {"_id": prod_oid, "store": store_oid},
             {"$set": prod_fields}
         )
 
-    # 2. Sync to Inventory
+    # 4. Sync to Inventory
     inv_fields = {}
-    if "quantity" in data: inv_fields["quantity"] = float(data["quantity"])
-    if "selling_price" in data: inv_fields["sellingPrice"] = float(data["selling_price"])
-    if "min_stock_level" in data: inv_fields["minStockLevel"] = float(data["min_stock_level"])
-    if "is_active" in data: inv_fields["isActive"] = data["is_active"]
+    if new_calculated_qty is not None:
+        inv_fields["quantity"] = new_calculated_qty
+    if "selling_price" in data and data["selling_price"] is not None:
+        inv_fields["sellingPrice"] = float(data["selling_price"])
+    if "min_stock_level" in data and data["min_stock_level"] is not None:
+        inv_fields["minStockLevel"] = float(data["min_stock_level"])
+    if "is_active" in data and data["is_active"] is not None:
+        inv_fields["isActive"] = data["is_active"]
 
     if inv_fields:
-        # We must recalculate low/out of stock if quantity or min_stock_level changed
-        inv = await db["inventories"].find_one({"store": store_oid, "product": prod_oid})
+        inv = await inventories_col.find_one({"store": store_oid, "product": prod_oid})
         if inv:
-            new_qty = inv_fields.get("quantity", inv.get("quantity", 0))
-            new_min = inv_fields.get("minStockLevel", inv.get("minStockLevel", 10))
-            
+            new_qty = inv_fields.get("quantity", inv.get("quantity", 0.0))
+            new_min = inv_fields.get("minStockLevel", inv.get("minStockLevel", 10.0))
+
             is_out_of_stock = new_qty == 0
             is_low_stock = (not is_out_of_stock) and (new_qty <= new_min)
-            
+
             inv_fields["isOutOfStock"] = is_out_of_stock
             inv_fields["isLowStock"] = is_low_stock
             inv_fields["updatedAt"] = datetime.now(timezone.utc)
 
-            await db["inventories"].update_one(
+            await inventories_col.update_one(
                 {"_id": inv["_id"]},
                 {"$set": inv_fields}
             )
 
-    LOGGER.info("product_updated", product_id=product_id)
-    return True
+    LOGGER.info(
+        "product_updated",
+        product_id=str(prod_oid),
+        product_name=prod_name,
+        previous_qty=previous_qty,
+        new_qty=new_calculated_qty,
+        added_delta=added_delta,
+    )
+    return {
+        "success": True,
+        "product_id": str(prod_oid),
+        "product_name": prod_name,
+        "previous_quantity": previous_qty,
+        "new_quantity": new_calculated_qty if new_calculated_qty is not None else previous_qty,
+        "added_quantity": added_delta,
+    }
 
 
 async def delete_product(store_id: str, product_id: str) -> bool:
     """Soft deletes the product and inventory."""
-    return await update_product(store_id, product_id, {"is_active": False})
+    res = await update_product(store_id, product_id, {"is_active": False})
+    return bool(res)

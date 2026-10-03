@@ -92,6 +92,7 @@ from app.agent.tools.sellers.write import tool_create_seller, tool_update_seller
 # Purchases
 from app.agent.tools.purchases.summary import get_purchase_summary
 from app.agent.tools.purchases.search import search_purchases
+from app.agent.tools.purchases.write import tool_create_purchase, tool_update_purchase, tool_delete_purchase
 
 # Expenses
 from app.agent.tools.expenses.summary import get_expense_summary
@@ -101,7 +102,7 @@ from app.agent.tools.expenses.write import tool_create_expense, tool_update_expe
 from app.agent.tools.profit_loss.report import get_profit_loss_report
 
 # Products
-from app.agent.tools.products.write import tool_create_product, tool_update_product, tool_delete_product
+from app.agent.tools.products.write import tool_create_product, tool_update_product, tool_adjust_stock, tool_delete_product
 
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
@@ -199,6 +200,9 @@ VYAPAR_TOOLS = [
     # Purchases
     get_purchase_summary,
     search_purchases,
+    tool_create_purchase,
+    tool_update_purchase,
+    tool_delete_purchase,
 
     # Expenses
     get_expense_summary,
@@ -212,6 +216,7 @@ VYAPAR_TOOLS = [
     # Products
     tool_create_product,
     tool_update_product,
+    tool_adjust_stock,
     tool_delete_product,
 ]
 

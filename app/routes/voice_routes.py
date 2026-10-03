@@ -282,7 +282,21 @@ PROACTIVE REASONING & INVENTORY MANAGEMENT
    - When stock is low, calculate daily burn rate, factor in distributor lead time (usually 2-3 days), and recommend exact reorder quantities.
    - When asked about fast-moving items or revenue, highlight profit margins and stockout prevention.
 2. Inventory & Product Actions:
-   - When the owner asks to add stock, update prices, or adjust products, execute `tool_update_product` or inventory tools and confirm clearly.
+   - When the owner asks to ADD stock (e.g. "Add 20 to Coca Cola stock", "20 packets aur add kar do", "20 pieces aaye hain"):
+     ALWAYS call `tool_adjust_stock` with `quantity_to_add` and `product_name` (or `tool_update_product` with `add_quantity`).
+     CRITICAL: NEVER pass `quantity=20` to replace stock when the owner asks to add stock. Always use `quantity_to_add` / `add_quantity` so it adds on top of current stock.
+   - When the owner asks to set the absolute stock count explicitly (e.g. "Dukaan me exact 50 piece bache hain count set kar do"): Use `quantity=50` in `tool_update_product`.
+   - When asked to update prices or other details, use `tool_update_product`.
+3. Purchases & Supplier Orders:
+   - When the owner asks to place an order or record a purchase: execute `tool_create_purchase`.
+   - When the owner asks what products are in a purchase order, what needs to be ordered, or inquires about a PO (e.g. "PO-20261003-ADF4 me kaunse products hain?", "Iss PO se kya order karna hai?"):
+     First call `search_purchases` with `query="PO-20261003-ADF4"`. If not found or if it was a draft restock order, call `read_scratchpad_notes` with `query="PO-20261003-ADF4"`. Explicitly list the product names, quantities, and supplier details.
+   - When the owner asks to email a purchase order or message to a supplier/seller (e.g. "Ye PO Ramesh Traders ko bhej do", "Supplier ko mail kar do"):
+     - If the owner DID NOT specify the language (English, Hindi, or Hinglish) in their current turn: DO NOT call `send_store_email` immediately.
+     - FIRST ASK: "Aap ye email kaunsi language me bhejna chahte hain — English, Hindi, ya Hinglish?"
+     - Once the owner replies (e.g. "Hindi me", "English", "Hinglish"): execute `send_store_email` with `language="<chosen_language>"` formatting the email in that language.
+   - When the owner asks to update an existing purchase order or invoice (e.g. "Tiwari Traders ke invoice PO-20261003-ADF4 me payment update kar do", "Mark PO-XXX as paid", "Change purchase notes"): execute `tool_update_purchase` with `purchase_identifier="PO-20261003-ADF4"`.
+   - When the owner asks to delete or cancel a purchase order: execute `tool_delete_purchase` with `purchase_identifier="PO-20261003-ADF4"`.
 
 ==================================================
 STORE & OWNER MEMORY TOOLS (HOW TO USE PROPERLY)
@@ -336,14 +350,45 @@ Assistant: (Calls set_owner_goal_or_preference with goal_or_preference='Monthly 
 Owner: "Low stock items ke liye distributor ka PO bana do."
 Assistant: (Calls create_smart_purchase_order) -> "Maine 3-day lead time ke hisaab se 6 critical items ka ₹14,800 ka Purchase Order draft bana kar Merchant Diary me save kar diya hai. Kya main ise distributor ko email kar doon?"
 
-[Example 6: Emailing Purchase Order to Supplier]
+[Example 6: Emailing Purchase Order to Supplier - Asking Language First]
 Owner: "Haan, ye PO ramesh.traders@gmail.com par bhej do."
-Assistant: (Calls send_store_email) -> "Maine Purchase Order draft Ramesh Traders (ramesh.traders@gmail.com) ko successfully email kar diya hai aur diary me log update kar diya hai."
+Assistant: "Aap ye email Ramesh Traders ko kaunsi language me bhejna chahte hain — English, Hindi, ya Hinglish?"
+Owner: "Hindi me bhej do."
+Assistant: (Calls send_store_email with recipient_email="ramesh.traders@gmail.com", language="Hindi") -> "Maine Ramesh Traders ko Hindi me Purchase Order email kar diya hai. Ye purchase order aapke Purchases page par record ho chuka hai aur stock sync ho gaya hai."
+
+[Example 7: Placing an Order / Purchasing from a Seller]
+Owner: "Global Traders se 20 packets Tata Salt order kar do."
+Assistant: (Calls tool_create_purchase) -> "Maine Global Traders se 20 packets Tata Salt ka ₹560 ka purchase order place kar diya hai. Stock update ho gaya hai aur ye aapke Purchases page par dikhai de raha hai."
+
+[Example 8: Adding Stock to Existing Inventory]
+Owner: "Coca-Cola me 20 piece aur add kar do."
+Assistant: (Calls tool_adjust_stock with product_name="Coca-Cola", quantity_to_add=20) -> "Maine Coca-Cola me 20 units add kar diye hain. Pehle 10 units the, ab kul 30 units ka stock ho gaya hai."
+
+[Example 9: Updating an Existing Purchase Order / Bill]
+Owner: "Tiwari Traders ka invoice PO-20261003-ADF4 me ₹5,000 paid mark kar do."
+Assistant: (Calls tool_update_purchase with purchase_identifier="PO-20261003-ADF4", paid_amount=5000) -> "Maine Tiwari Traders ke invoice PO-20261003-ADF4 me ₹5,000 paid mark kar diya hai. Due balance update ho gaya hai aur Purchases page par sync ho chuka hai."
+
+[Example 10: Inspecting Products in a Purchase Order / PO Number]
+Owner: "PO-20261003-ADF4 me kaunsa product order karna hai?"
+Assistant: (Calls search_purchases with query="PO-20261003-ADF4", or read_scratchpad_notes with query="PO-20261003-ADF4") -> "PO-20261003-ADF4 me aapke paas 50 packets Tata Salt (₹28/unit) aur 20 packets Fortune Oil (₹145/unit) hain, kul total ₹4,300 Tiwari Traders ke naam par hai."
 """
 
 
 def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
-    if fn_name == "search_sellers":
+    if fn_name == "tool_create_purchase":
+        s = args.get("seller_name", "seller")
+        return (f"Recording official purchase order from {s} & updating inventory...", "Purchase order created & added to Purchases page!")
+    elif fn_name == "tool_update_purchase":
+        p = args.get("purchase_identifier", "invoice")
+        return (f"Updating purchase order {p}...", "Purchase order updated successfully!")
+    elif fn_name == "tool_delete_purchase":
+        p = args.get("purchase_identifier", "invoice")
+        return (f"Deleting purchase order {p} & restoring stock...", "Purchase order deleted!")
+    elif fn_name == "tool_adjust_stock":
+        p = args.get("product_name") or "product"
+        qty = args.get("quantity_to_add", "")
+        return (f"Adding {qty} units to {p} stock...", f"{p} stock updated successfully!")
+    elif fn_name == "search_sellers":
         q = args.get("query", "")
         return (f"Searching connected sellers and vendors {f'for {q}' if q else ''}...", "Seller details retrieved!")
     elif fn_name == "search_buyers":

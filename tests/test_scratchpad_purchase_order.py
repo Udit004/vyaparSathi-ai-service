@@ -121,3 +121,30 @@ async def test_send_store_email():
         assert res["success"] is True
         assert res["recipient"] == "supplier@example.com"
         assert res["status"] == "SENT"
+
+
+@pytest.mark.asyncio
+async def test_send_store_email_with_seller_name():
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.json.return_value = {"success": True, "message": "Email sent successfully"}
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+         patch("app.agent.tools.communication.send_email._resolve_recipient_email", new_callable=AsyncMock, return_value=("global@traders.com", "Global Traders", None)), \
+         patch("app.agent.tools.communication.send_email.get_redis", return_value=None):
+
+        mock_post.return_value = mock_response
+
+        res = await send_store_email.ainvoke({
+            "recipient_name": "Global Traders",
+            "subject": "Purchase Order PO-2026-001",
+            "body_text": "Please supply 20 bags.",
+            "store_id": "store_123",
+        })
+
+        assert res["success"] is True
+        assert res["recipient"] == "global@traders.com"
+        assert res["recipient_name"] == "Global Traders"
+        assert res["status"] == "SENT"
+

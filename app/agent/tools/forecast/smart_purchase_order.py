@@ -196,10 +196,44 @@ async def create_smart_purchase_order(
 
     po_items.sort(key=lambda x: (0 if x["urgency"] == "RED" else 1, -x["line_total"]))
 
-    # 3. Generate PO Identifier
+    # 3. Resolve Store & Owner Details
+    store_name = "Vyapar Sathi Store"
+    owner_name = "Store Owner"
+    owner_email = ""
+    try:
+        db = get_database()
+        s_doc = None
+        if ObjectId.is_valid(store_id):
+            s_res = db["stores"].find_one({"_id": ObjectId(store_id)})
+            s_doc = (await s_res) if hasattr(s_res, "__await__") else s_res
+        elif store_id:
+            s_res = db["stores"].find_one({"name": store_id})
+            s_doc = (await s_res) if hasattr(s_res, "__await__") else s_res
+
+        if s_doc and isinstance(s_doc, dict):
+            store_name = s_doc.get("name") or store_name
+            owner_ref = s_doc.get("owner")
+            if owner_ref:
+                u_oid = owner_ref if isinstance(owner_ref, ObjectId) else (ObjectId(str(owner_ref)) if ObjectId.is_valid(str(owner_ref)) else None)
+                if u_oid:
+                    u_res = db["users"].find_one({"_id": u_oid})
+                    u_doc = (await u_res) if hasattr(u_res, "__await__") else u_res
+                    if u_doc and isinstance(u_doc, dict):
+                        owner_name = u_doc.get("name") or owner_name
+                        owner_email = u_doc.get("email") or owner_email
+        if not owner_email and user_id and ObjectId.is_valid(user_id):
+            u_res = db["users"].find_one({"_id": ObjectId(user_id)})
+            u_doc = (await u_res) if hasattr(u_res, "__await__") else u_res
+            if u_doc and isinstance(u_doc, dict):
+                owner_name = u_doc.get("name") or owner_name
+                owner_email = u_doc.get("email") or owner_email
+    except Exception as fetch_err:
+        LOGGER.debug("po_owner_meta_fetch_err", error=str(fetch_err))
+
+    # 4. Generate PO Identifier
     po_number = f"PO-{datetime.datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
 
-    # 4. Generate HTML Email/Invoice Template
+    # 5. Generate HTML Email/Invoice Template
     rows_html = "".join([
         f"<tr>"
         f"<td style='padding:8px;border:1px solid #e2e8f0;'><b>{item['product_name']}</b></td>"
@@ -211,11 +245,15 @@ async def create_smart_purchase_order(
         for item in po_items
     ])
 
+    owner_contact_snippet = f" | Owner: <b>{owner_name}</b>" + (f" (<a href='mailto:{owner_email}'>{owner_email}</a>)" if owner_email else "")
     email_html = f"""
     <div style='font-family: Arial, sans-serif; max-width: 650px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;'>
       <div style='border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 16px;'>
         <h2 style='color: #1e3a8a; margin: 0;'>PURCHASE ORDER: {po_number}</h2>
         <p style='color: #64748b; margin: 4px 0 0 0;'>Date: {datetime.datetime.now().strftime('%d %B %Y')} | Lead Time: {days_lead_time} days</p>
+        <p style='color: #334155; margin: 6px 0 0 0; font-size: 13px;'>
+          From Store: <b>{store_name}</b>{owner_contact_snippet}
+        </p>
       </div>
       <table style='width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px;'>
         <thead>
@@ -235,6 +273,9 @@ async def create_smart_purchase_order(
         <p style='font-size: 16px; font-weight: bold; color: #0f172a; margin: 0;'>
           Grand Total: ₹{grand_total_cost:,.2f} ({total_units} units across {len(po_items)} items)
         </p>
+      </div>
+      <div style='margin-top: 20px; padding: 12px; background: #f8fafc; border-top: 1px solid #e2e8f0; border-radius: 4px; font-size: 12px; color: #64748b;'>
+        <p style='margin: 0;'><b>Authorized Store Owner:</b> {owner_name} {f"| <b>Email:</b> {owner_email}" if owner_email else ""}</p>
       </div>
     </div>
     """

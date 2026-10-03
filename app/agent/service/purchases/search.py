@@ -45,7 +45,7 @@ async def fetch_purchases(
 
     match: dict = {"store": store_oid}
 
-    if days_lookback > 0:
+    if not query and days_lookback > 0:
         since = datetime.now(timezone.utc) - timedelta(days=days_lookback)
         match["purchaseDate"] = {"$gte": since}
 
@@ -53,11 +53,18 @@ async def fetch_purchases(
         match["paymentStatus"] = payment_status
 
     if query:
+        clean_q = query.strip()
         match["$or"] = [
-            {"invoiceNumber": {"$regex": query, "$options": "i"}},
-            {"billNumber": {"$regex": query, "$options": "i"}},
-            {"notes": {"$regex": query, "$options": "i"}},
+            {"invoiceNumber": {"$regex": clean_q, "$options": "i"}},
+            {"billNumber": {"$regex": clean_q, "$options": "i"}},
+            {"notes": {"$regex": clean_q, "$options": "i"}},
         ]
+        # Also support searching by exact ObjectId string
+        try:
+            if ObjectId.is_valid(clean_q):
+                match["$or"].append({"_id": ObjectId(clean_q)})
+        except Exception:
+            pass
 
     # Pipeline to lookup seller details
     pipeline = [
@@ -78,6 +85,29 @@ async def fetch_purchases(
     cursor = db["purchases"].aggregate(pipeline)
     raw_results = await cursor.to_list(length=limit * 2 if seller_name else limit)
 
+    # Batch hydrate missing product names from products collection
+    missing_pids = set()
+    for p in raw_results:
+        for it in p.get("items", []):
+            if not it.get("productName") and not it.get("name") and it.get("product"):
+                try:
+                    p_id = it["product"] if isinstance(it["product"], ObjectId) else ObjectId(str(it["product"]))
+                    missing_pids.add(p_id)
+                except Exception:
+                    pass
+
+    product_names_map: dict[str, str] = {}
+    if missing_pids:
+        try:
+            prod_docs = await db["products"].find(
+                {"_id": {"$in": list(missing_pids)}},
+                {"_id": 1, "name": 1}
+            ).to_list(length=len(missing_pids))
+            for pd in prod_docs:
+                product_names_map[str(pd["_id"])] = pd.get("name", "Product")
+        except Exception as e:
+            LOGGER.warning("product_name_hydration_failed", error=str(e))
+
     output = []
     for p in raw_results:
         seller_info = p.get("seller_doc") or {}
@@ -91,8 +121,10 @@ async def fetch_purchases(
 
         items_summary = []
         for it in p.get("items", []):
+            prod_ref = str(it.get("product", ""))
+            p_name = it.get("productName") or it.get("name") or product_names_map.get(prod_ref) or "Item"
             items_summary.append({
-                "product_name": it.get("productName") or it.get("name", "Item"),
+                "product_name": p_name,
                 "quantity": it.get("quantity", 0),
                 "purchase_price": it.get("purchasePrice") or it.get("price", 0.0),
                 "total_cost": it.get("totalCost") or it.get("total", 0.0),
@@ -109,7 +141,7 @@ async def fetch_purchases(
             "due_amount": round(p.get("dueAmount", 0.0), 2),
             "payment_status": p.get("paymentStatus", "unpaid"),
             "items_count": len(items_summary),
-            "items": items_summary[:5],
+            "items": items_summary[:20],
         })
 
         if len(output) >= limit:
