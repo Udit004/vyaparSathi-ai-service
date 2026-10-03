@@ -225,16 +225,34 @@ ROLE & PERSONALITY
 - Monetary Values: Always express money in Rupees (₹), e.g., "₹450", "₹1,200".
 
 ==================================================
-PROACTIVE REASONING FOR STORE OWNERS
+PROACTIVE REASONING & INVENTORY MANAGEMENT
 ==================================================
 1. Do not just report raw numbers passively — explain what they mean for business:
-   - When stock is low, calculate the daily burn rate, factor in distributor lead time (usually 2-3 days), and recommend exact reorder quantities.
+   - When stock is low, calculate daily burn rate, factor in distributor lead time (usually 2-3 days), and recommend exact reorder quantities.
    - When asked about fast-moving items or revenue, highlight profit margins and stockout prevention.
-2. Memory Tools (Redis & Pinecone):
-   - When the user asks about past decisions, supplier discounts, or customer credit rules, call `search_memory`.
-   - When the owner tells you a new business rule, supplier term, or customer preference (e.g. "Do not give credit to Ramesh"), call `remember_store_fact` immediately to memorize and cache it.
-3. Inventory Control:
-   - When the owner asks to add stock, update prices, or adjust products, execute the tool and confirm clearly.
+2. Inventory & Product Actions:
+   - When the owner asks to add stock, update prices, or adjust products, execute `tool_update_product` or inventory tools and confirm clearly.
+
+==================================================
+STORE & OWNER MEMORY TOOLS (HOW TO USE PROPERLY)
+==================================================
+Always supply the correct query and parameters when calling memory tools:
+1. `get_owner_goals_and_preferences`:
+   - When to call: When the owner asks about their own targets, sales goals, profit margin aims, or personal preferences (e.g., "Mera iss mahine ka target kya hai?", "Meri kya preferences hain?").
+   - Arguments: `topic="business goals targets preferences"`, `user_id="{user_id}"`, `store_id="{store_id}"`.
+2. `set_owner_goal_or_preference`:
+   - When to call: When the owner states a personal target or preference (e.g., "Mera goal hai iss mahine ₹5 lakh sales karna", "Mujhe Hindi me brief alert bheja karo").
+   - Arguments: `goal_or_preference="<the goal or preference statement>"`, `category="business_goal"`, `user_id="{user_id}"`, `store_id="{store_id}"`.
+3. `search_memory`:
+   - When to call: When looking up past decisions, supplier discount agreements, customer credit rules, or general store history.
+   - Arguments:
+     - `query`: A concise descriptive search phrase (e.g. "Ramesh supplier discount", "customer credit rule", "monthly revenue target", or "*" to list all).
+     - `scope`: "all" (search both owner & store facts), "user" (for owner personal targets/preferences), or "store" (for store-level business facts).
+     - `user_id`: "{user_id}"
+     - `store_id`: "{store_id}"
+4. `remember_store_fact`:
+   - When to call: When the owner shares a store-wide business rule or supplier term (e.g., "Supplier ABC gives 5% discount on cash orders above 10 boxes").
+   - Arguments: `content="<the business rule>"`, `memory_type="store_fact"`, `user_id="{user_id}"`, `store_id="{store_id}"`.
 
 ==================================================
 IMMUTABLE SESSION CONTEXT
@@ -244,7 +262,7 @@ store_id={store_id}
 For every tool call, use exactly this store_id and user_id.
 
 ==================================================
-STORE MEMORY BANK (REDIS & PINECONE)
+STORE & OWNER MEMORY BANK (REDIS & PINECONE)
 ==================================================
 {memory_context}
 
@@ -257,11 +275,15 @@ Assistant: (Calls get_product_details) -> "Aapke paas Parle-G ke sirf 6 packets 
 
 [Example 2: Memory Recall for Supplier Pricing]
 Owner: "Fortune Oil kaunse supplier se lena chahiye?"
-Assistant: (Calls search_memory) -> "Gupta Traders aapko 10 dabbe lene par 4% cash discount dete hain aur 2 din me delivery kar dete hain. Unhe order karna best rahega."
+Assistant: (Calls search_memory with query='Fortune Oil supplier terms discount', scope='store') -> "Gupta Traders aapko 10 dabbe lene par 4% cash discount dete hain aur 2 din me delivery kar dete hain. Unhe order karna best rahega."
 
-[Example 3: Memorizing a Business Rule]
-Owner: "Yaad rakhna ki Suresh bhai ko ab udhaar mat dena."
-Assistant: (Calls remember_store_fact) -> "Samajh gaya ji! Suresh bhai ke account par credit lock note kar liya hai. Aage se koi naya udhaar allow nahi hoga."
+[Example 3: Setting a Personal Business Goal]
+Owner: "Mera goal hai iss mahine ₹4 lakh ka revenue hit karna."
+Assistant: (Calls set_owner_goal_or_preference with goal_or_preference='Monthly sales target is ₹4,00,000') -> "Bilkul! Aapka monthly revenue target ₹4,00,000 save kar liya hai. Main aapki inventory aur sales strategy ko isi target ke hisaab se align rakhunga."
+
+[Example 4: Recalling Owner Personal Targets]
+Owner: "Mera monthly target kya tha aur hum kahan tak pahuche?"
+Assistant: (Calls get_owner_goals_and_preferences & get_sales_summary) -> "Aapka monthly target ₹4,00,000 hai aur abhi tak ₹2,85,000 achieve ho chuka hai. Baaki ₹1,15,000 ke liye humein fast-moving items ka stock ready rakhna hoga."
 """
 
 
@@ -271,6 +293,10 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return (f"Searching store memory for '{q[:30]}'...", "Memory retrieved!")
     elif fn_name == "remember_store_fact":
         return ("Saving new fact to store memory...", "Memory saved and cached!")
+    elif fn_name == "get_owner_goals_and_preferences":
+        return ("Retrieving your personal business goals...", "Owner goals loaded!")
+    elif fn_name == "set_owner_goal_or_preference":
+        return ("Updating your personal business goal...", "Goal saved and cached!")
     elif fn_name in ("get_low_stock_products", "get_inventory_summary"):
         return ("Scanning inventory levels...", "Inventory data ready!")
     elif fn_name in ("get_sales_summary", "get_daily_sales_trend", "get_top_selling_products"):
@@ -461,12 +487,19 @@ async def voice_assistant_websocket(
                                     # Inject context that tools normally get from state
                                     fn_args.setdefault("user_id", user_id)
                                     fn_args.setdefault("store_id", store_id)
-                                    result = await tool.ainvoke(fn_args)
+                                    result = await tool.ainvoke(
+                                        fn_args,
+                                        config={"configurable": {"user_id": user_id, "store_id": store_id}},
+                                    )
+                                    if isinstance(result, (dict, list)):
+                                        serialized_result = json.dumps(result, ensure_ascii=False)
+                                    else:
+                                        serialized_result = str(result)
                                 else:
-                                    result = f"Tool '{fn_name}' not found."
+                                    serialized_result = f"Tool '{fn_name}' not found."
                             except Exception as exc:
                                 LOGGER.error("voice_tool_error", tool=fn_name, error=str(exc), exc_info=True)
-                                result = f"Error executing {fn_name}: {exc}"
+                                serialized_result = f"Error executing {fn_name}: {exc}"
 
                             # Notify client that tool execution is complete
                             await websocket.send_json({
@@ -478,7 +511,7 @@ async def voice_assistant_websocket(
                             tool_responses.append({
                                 "id": fn_id,
                                 "name": fn_name,
-                                "response": {"output": str(result)},
+                                "response": {"output": serialized_result},
                             })
 
                         # Send all tool results back to Gemini

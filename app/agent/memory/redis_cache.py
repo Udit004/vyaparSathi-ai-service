@@ -199,13 +199,30 @@ def search_in_memory_cache(
     """
     High-speed in-memory keyword & token relevance search across cached Redis memory records.
     Filters by memory_types if provided.
+    Supports wildcard ('*', 'all', '') queries to list cached memories.
     """
-    if not memories or not query:
+    if not memories:
         return []
 
-    query_tokens = [w for w in re.sub(r"[^a-zA-Z0-9\s]", " ", query.lower()).split() if len(w) > 2]
+    clean_query = (query or "").strip().lower()
+
+    # Wildcard or list-all queries
+    if not clean_query or clean_query in ("*", "all", "everything", "list", "show all", "get all"):
+        results = []
+        for item in memories:
+            if memory_types:
+                item_type = (item.get("metadata", {}).get("memory_type") or item.get("memory_type", ""))
+                if item_type and item_type not in memory_types:
+                    continue
+            results.append({**item, "source": "redis_cache", "score": 1.0})
+        return results[:top_k]
+
+    query_tokens = [w for w in re.sub(r"[^a-zA-Z0-9\s]", " ", clean_query).split() if len(w) > 2]
     if not query_tokens:
-        return []
+        # Fallback to returning recent memories if query tokens are short (e.g., abbreviations or digits)
+        query_tokens = [w for w in clean_query.split() if w]
+        if not query_tokens:
+            return memories[:top_k]
 
     scored_results = []
     for item in memories:
@@ -220,7 +237,7 @@ def search_in_memory_cache(
 
         score = 0.0
         # Exact substring boost
-        if query.lower() in content:
+        if clean_query in content:
             score += 3.0
 
         # Token matching

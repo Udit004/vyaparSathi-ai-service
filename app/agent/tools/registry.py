@@ -55,8 +55,13 @@ from app.agent.tools.subgraphs.invoke_inventory_audit import invoke_deep_invento
 from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_order
 from app.agent.tools.subgraphs.invoke_document_generation import invoke_document_generation
 
-# Memory
-from app.agent.tools.memory.search import search_memory, remember_store_fact
+# Memory & Owner Personalization
+from app.agent.tools.memory.search import (
+    search_memory,
+    remember_store_fact,
+    get_owner_goals_and_preferences,
+    set_owner_goal_or_preference,
+)
 
 # Buyers
 from app.agent.tools.buyers.search import search_buyers
@@ -140,9 +145,11 @@ VYAPAR_TOOLS = [
     invoke_smart_restock_order,
     invoke_document_generation,
 
-    # Memory (multi-tier Redis + Pinecone memory tools)
+    # Memory & Owner Personalization (Redis + Pinecone)
     search_memory,
     remember_store_fact,
+    get_owner_goals_and_preferences,
+    set_owner_goal_or_preference,
 
     # Buyers
     search_buyers,
