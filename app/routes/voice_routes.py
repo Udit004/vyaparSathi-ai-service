@@ -14,6 +14,7 @@ import asyncio
 import base64
 import math
 import struct
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import websockets
 
@@ -48,16 +49,66 @@ def _decode_gemini_message(msg):
     return None
 
 
+def _clean_gemini_schema(node: Any) -> Any:
+    """Recursively clean JSON Schema for Gemini Live API compatibility.
+
+    Gemini Live API rejects unknown fields such as additionalProperties, title,
+    default, $defs, allOf, etc.
+    """
+    if not isinstance(node, dict):
+        if isinstance(node, list):
+            return [_clean_gemini_schema(item) for item in node]
+        return node
+
+    cleaned: Dict[str, Any] = {}
+
+    # Handle anyOf / oneOf (e.g. Optional[T] / Union[T, None])
+    if "anyOf" in node or "oneOf" in node:
+        sub_schemas = node.get("anyOf") or node.get("oneOf", [])
+        non_null = [s for s in sub_schemas if isinstance(s, dict) and s.get("type") != "null"]
+        if non_null:
+            merged = _clean_gemini_schema(non_null[0])
+            if isinstance(merged, dict):
+                cleaned.update(merged)
+                if any(isinstance(s, dict) and s.get("type") == "null" for s in sub_schemas):
+                    cleaned["nullable"] = True
+        else:
+            cleaned["type"] = "string"
+
+    # Copy allowed schema fields
+    for k, v in node.items():
+        if k in (
+            "additionalProperties", "title", "$defs", "$ref", "default", "examples",
+            "prefixItems", "discriminator", "readOnly", "writeOnly", "xml", "externalDocs",
+            "example", "deprecated"
+        ):
+            continue
+        if k == "properties" and isinstance(v, dict):
+            cleaned["properties"] = {
+                prop_name: _clean_gemini_schema(prop_val)
+                for prop_name, prop_val in v.items()
+            }
+        elif k == "items":
+            cleaned["items"] = _clean_gemini_schema(v)
+        elif k not in ("anyOf", "oneOf"):
+            cleaned[k] = _clean_gemini_schema(v) if isinstance(v, (dict, list)) else v
+
+    # Ensure valid type on objects with properties
+    if "properties" in cleaned and "type" not in cleaned:
+        cleaned["type"] = "object"
+
+    return cleaned
+
+
 def _get_gemini_tools():
     gemini_tools = []
     for tool in VYAPAR_TOOLS:
         args_schema = getattr(tool, "args_schema", None)
-        parameters = args_schema.model_json_schema() if args_schema else {
+        raw_parameters = args_schema.model_json_schema() if args_schema else {
             "type": "object",
             "properties": {},
         }
-        parameters.pop("title", None)
-        parameters.pop("$defs", None)
+        parameters = _clean_gemini_schema(raw_parameters)
         gemini_tools.append({
             "name": tool.name,
             "description": tool.description,
@@ -281,14 +332,40 @@ Assistant: (Calls search_memory with query='Fortune Oil supplier terms discount'
 Owner: "Mera goal hai iss mahine ₹4 lakh ka revenue hit karna."
 Assistant: (Calls set_owner_goal_or_preference with goal_or_preference='Monthly sales target is ₹4,00,000') -> "Bilkul! Aapka monthly revenue target ₹4,00,000 save kar liya hai. Main aapki inventory aur sales strategy ko isi target ke hisaab se align rakhunga."
 
-[Example 4: Recalling Owner Personal Targets]
-Owner: "Mera monthly target kya tha aur hum kahan tak pahuche?"
-Assistant: (Calls get_owner_goals_and_preferences & get_sales_summary) -> "Aapka monthly target ₹4,00,000 hai aur abhi tak ₹2,85,000 achieve ho chuka hai. Baaki ₹1,15,000 ke liye humein fast-moving items ka stock ready rakhna hoga."
+[Example 5: Smart Purchase Order & Diary Draft]
+Owner: "Low stock items ke liye distributor ka PO bana do."
+Assistant: (Calls create_smart_purchase_order) -> "Maine 3-day lead time ke hisaab se 6 critical items ka ₹14,800 ka Purchase Order draft bana kar Merchant Diary me save kar diya hai. Kya main ise distributor ko email kar doon?"
+
+[Example 6: Emailing Purchase Order to Supplier]
+Owner: "Haan, ye PO ramesh.traders@gmail.com par bhej do."
+Assistant: (Calls send_store_email) -> "Maine Purchase Order draft Ramesh Traders (ramesh.traders@gmail.com) ko successfully email kar diya hai aur diary me log update kar diya hai."
 """
 
 
 def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
-    if fn_name == "search_memory":
+    if fn_name == "search_sellers":
+        q = args.get("query", "")
+        return (f"Searching connected sellers and vendors {f'for {q}' if q else ''}...", "Seller details retrieved!")
+    elif fn_name == "search_buyers":
+        q = args.get("query", "")
+        return (f"Searching customer and buyer records {f'for {q}' if q else ''}...", "Buyer details retrieved!")
+    elif fn_name == "search_purchases":
+        s = args.get("seller_name", "")
+        return (f"Searching purchase orders and supplier bills {f'from {s}' if s else ''}...", "Purchase orders retrieved!")
+    elif fn_name == "create_smart_purchase_order":
+        return ("Calculating lead-time forecast & generating Purchase Order...", "Purchase Order draft ready & saved to Diary!")
+    elif fn_name == "send_store_email":
+        rec = args.get("recipient_email") or args.get("to") or "recipient"
+        return (f"Sending official email to {rec}...", "Email dispatched successfully!")
+    elif fn_name == "write_scratchpad_note":
+        return ("Writing note to your Merchant Diary...", "Note saved to Merchant Diary!")
+    elif fn_name == "read_scratchpad_notes":
+        return ("Reading notes from your Merchant Diary...", "Diary notes retrieved!")
+    elif fn_name == "update_scratchpad_note":
+        return ("Updating note in your Merchant Diary...", "Diary note updated!")
+    elif fn_name == "delete_scratchpad_note":
+        return ("Removing note from your Merchant Diary...", "Note removed!")
+    elif fn_name == "search_memory":
         q = args.get("query", "")
         return (f"Searching store memory for '{q[:30]}'...", "Memory retrieved!")
     elif fn_name == "remember_store_fact":
@@ -297,6 +374,16 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return ("Retrieving your personal business goals...", "Owner goals loaded!")
     elif fn_name == "set_owner_goal_or_preference":
         return ("Updating your personal business goal...", "Goal saved and cached!")
+    elif fn_name == "get_daily_action_checklist":
+        return ("Preparing your daily action checklist...", "Daily action plan ready!")
+    elif fn_name == "analyze_customer_credit_risk":
+        return ("Analyzing customer credit & udhaar risk...", "Credit risk analysis ready!")
+    elif fn_name == "calculate_restock_budget":
+        return ("Calculating restock budget & distributor payouts...", "Restock budget ready!")
+    elif fn_name == "generate_deal_bundle_recommendation":
+        return ("Generating profitable promotional combos...", "Bundle deals ready!")
+    elif fn_name == "get_store_goal_progress_report":
+        return ("Calculating progress towards your monthly goal...", "Goal progress report ready!")
     elif fn_name in ("get_low_stock_products", "get_inventory_summary"):
         return ("Scanning inventory levels...", "Inventory data ready!")
     elif fn_name in ("get_sales_summary", "get_daily_sales_trend", "get_top_selling_products"):

@@ -40,20 +40,9 @@ class Settings(BaseSettings):
     cloudflare_r2_access_key_id: str | None = None
     cloudflare_r2_secret_access_key: str | None = None
     cloudflare_r2_bucket_name: str | None = None
-    # Cloudflare R2 object storage. These remain optional at application startup
-    # because document storage is an independent, on-demand capability.
-    cloudflare_account_id: str | None = None
-    cloudflare_r2_endpoint: str | None = None
-    cloudflare_r2_access_key_id: str | None = None
-    cloudflare_r2_secret_access_key: str | None = None
-    cloudflare_r2_bucket_name: str | None = None
 
-    # Cloudflare R2 Storage
-    cloudflare_account_id: str | None = None
-    cloudflare_r2_endpoint: str | None = None
-    cloudflare_r2_access_key_id: str | None = None
-    cloudflare_r2_secret_access_key: str | None = None
-    cloudflare_r2_bucket_name: str = "vyapar-sathi-files-bucket"
+    # Express Backend URL for communications
+    express_backend_url: str = "http://localhost:5000"
 
     # Document generation limits
     max_generated_file_size_mb: int = 10

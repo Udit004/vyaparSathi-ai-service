@@ -27,9 +27,19 @@ from app.agent.tools.sales.fast_moving import get_fast_moving_products
 from app.agent.tools.forecast.demand import get_demand_forecast
 from app.agent.tools.forecast.restock import get_restock_priorities
 from app.agent.tools.forecast.stockout import get_stockout_estimate
+from app.agent.tools.forecast.restock_budget import calculate_restock_budget
+from app.agent.tools.forecast.smart_purchase_order import create_smart_purchase_order
 
-# Insights
+# Insights & Daily Action Plan
 from app.agent.tools.insights.store_insights import get_store_insights
+from app.agent.tools.insights.daily_action_checklist import get_daily_action_checklist
+
+# Sales & Goals
+from app.agent.tools.sales.bundle_recommendation import generate_deal_bundle_recommendation
+from app.agent.tools.sales.goal_progress import get_store_goal_progress_report
+
+# Communication (Express backend email wrapper)
+from app.agent.tools.communication.send_email import send_store_email
 
 # Web search
 from app.agent.tools.web.search_web import search_web
@@ -55,24 +65,33 @@ from app.agent.tools.subgraphs.invoke_inventory_audit import invoke_deep_invento
 from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_order
 from app.agent.tools.subgraphs.invoke_document_generation import invoke_document_generation
 
-# Memory & Owner Personalization
+# Memory & Owner Personalization (Redis + Pinecone + Merchant Scratchpad Diary)
 from app.agent.tools.memory.search import (
     search_memory,
     remember_store_fact,
     get_owner_goals_and_preferences,
     set_owner_goal_or_preference,
 )
+from app.agent.tools.memory.merchant_scratchpad import (
+    write_scratchpad_note,
+    read_scratchpad_notes,
+    update_scratchpad_note,
+    delete_scratchpad_note,
+)
 
-# Buyers
+# Buyers & Credit Risk
 from app.agent.tools.buyers.search import search_buyers
 from app.agent.tools.buyers.dues import get_buyer_dues
+from app.agent.tools.buyers.credit_risk import analyze_customer_credit_risk
 from app.agent.tools.buyers.write import tool_create_buyer, tool_update_buyer, tool_delete_buyer
 
 # Sellers
+from app.agent.tools.sellers.search import search_sellers
 from app.agent.tools.sellers.write import tool_create_seller, tool_update_seller, tool_delete_seller
 
 # Purchases
 from app.agent.tools.purchases.summary import get_purchase_summary
+from app.agent.tools.purchases.search import search_purchases
 
 # Expenses
 from app.agent.tools.expenses.summary import get_expense_summary
@@ -112,14 +131,22 @@ VYAPAR_TOOLS = [
     get_discount_impact,
     get_profit_margin_analysis,
     get_fast_moving_products,
+    generate_deal_bundle_recommendation,
+    get_store_goal_progress_report,
     
-    # Forecast
+    # Forecast & Purchase Orders
     get_demand_forecast,
     get_restock_priorities,
     get_stockout_estimate,
+    calculate_restock_budget,
+    create_smart_purchase_order,
     
-    # Insights
+    # Insights & Action Plan
     get_store_insights,
+    get_daily_action_checklist,
+
+    # Communication
+    send_store_email,
 
     # Web search
     search_web,
@@ -150,21 +177,28 @@ VYAPAR_TOOLS = [
     remember_store_fact,
     get_owner_goals_and_preferences,
     set_owner_goal_or_preference,
+    write_scratchpad_note,
+    read_scratchpad_notes,
+    update_scratchpad_note,
+    delete_scratchpad_note,
 
     # Buyers
     search_buyers,
     get_buyer_dues,
+    analyze_customer_credit_risk,
     tool_create_buyer,
     tool_update_buyer,
     tool_delete_buyer,
     
     # Sellers
+    search_sellers,
     tool_create_seller,
     tool_update_seller,
     tool_delete_seller,
 
     # Purchases
     get_purchase_summary,
+    search_purchases,
 
     # Expenses
     get_expense_summary,

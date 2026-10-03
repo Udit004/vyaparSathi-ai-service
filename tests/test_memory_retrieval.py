@@ -44,7 +44,11 @@ class TestBootstrapMemoryNode:
             "goal": "",
         }
 
-        with patch("app.agent.nodes.memory_query.search_user_memory", new_callable=AsyncMock) as mock_user, \
+        with patch("app.agent.nodes.memory_query.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.nodes.memory_query.set_cached_user_memory", new_callable=AsyncMock), \
+             patch("app.agent.nodes.memory_query.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.nodes.memory_query.set_cached_store_memory", new_callable=AsyncMock), \
+             patch("app.agent.nodes.memory_query.search_user_memory", new_callable=AsyncMock) as mock_user, \
              patch("app.agent.nodes.memory_query.search_store_memory", new_callable=AsyncMock) as mock_store, \
              patch("app.agent.nodes.memory_query.search_multi_store_memory", new_callable=AsyncMock) as mock_multi, \
              patch("app.agent.nodes.memory_query.build_memory_query", new_callable=AsyncMock, return_value="stock query"), \
@@ -79,7 +83,13 @@ class TestBootstrapMemoryNode:
             "goal": "",
         }
 
-        with patch("app.agent.nodes.memory_query.search_user_memory", new_callable=AsyncMock, return_value=[]) as mock_user, \
+        with patch("app.agent.nodes.memory_query.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.nodes.memory_query.set_cached_user_memory", new_callable=AsyncMock), \
+             patch("app.agent.nodes.memory_query.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.nodes.memory_query.set_cached_store_memory", new_callable=AsyncMock), \
+             patch("app.agent.nodes.memory_query.get_cached_multi_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.nodes.memory_query.set_cached_multi_memory", new_callable=AsyncMock), \
+             patch("app.agent.nodes.memory_query.search_user_memory", new_callable=AsyncMock, return_value=[]) as mock_user, \
              patch("app.agent.nodes.memory_query.search_store_memory", new_callable=AsyncMock, return_value=[]) as mock_store, \
              patch("app.agent.nodes.memory_query.search_multi_store_memory", new_callable=AsyncMock, return_value=[]), \
              patch("app.agent.nodes.memory_query.build_memory_query", new_callable=AsyncMock, return_value="rice inventory"), \
@@ -124,7 +134,11 @@ class TestSearchMemoryTool:
         """When Pinecone returns no matches, found=False with empty results."""
         from app.agent.tools.memory.search import search_memory
 
-        with patch("app.agent.tools.memory.search._query_memory_vectors", new_callable=AsyncMock, return_value=[]):
+        with patch("app.agent.tools.memory.search.get_cached_query_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.set_cached_query_memory", new_callable=AsyncMock), \
+             patch("app.agent.tools.memory.search.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search._query_memory_vectors", new_callable=AsyncMock, return_value=[]):
             result = await search_memory.ainvoke(
                 {"query": "rice decision", "scope": "store"},
                 config=self._make_config(),
@@ -144,7 +158,11 @@ class TestSearchMemoryTool:
             captured_filters.append(filter_dict)
             return []
 
-        with patch("app.agent.tools.memory.search._query_memory_vectors", side_effect=fake_query):
+        with patch("app.agent.tools.memory.search.get_cached_query_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.set_cached_query_memory", new_callable=AsyncMock), \
+             patch("app.agent.tools.memory.search.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search._query_memory_vectors", side_effect=fake_query):
             await search_memory.ainvoke(
                 {"query": "test", "scope": "store"},
                 config=self._make_config(store_id="store_A"),
@@ -165,7 +183,11 @@ class TestSearchMemoryTool:
             captured_filters.append(filter_dict)
             return []
 
-        with patch("app.agent.tools.memory.search._query_memory_vectors", side_effect=fake_query):
+        with patch("app.agent.tools.memory.search.get_cached_query_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.set_cached_query_memory", new_callable=AsyncMock), \
+             patch("app.agent.tools.memory.search.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search._query_memory_vectors", side_effect=fake_query):
             await search_memory.ainvoke(
                 {"query": "diwali decision", "memory_types": ["decision", "episodic_event"], "scope": "store"},
                 config=self._make_config(),
@@ -192,7 +214,11 @@ class TestSearchMemoryTool:
             "text": "Old decision",
         }
 
-        with patch("app.agent.tools.memory.search._query_memory_vectors", new_callable=AsyncMock, return_value=[old_memory]):
+        with patch("app.agent.tools.memory.search.get_cached_query_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.set_cached_query_memory", new_callable=AsyncMock), \
+             patch("app.agent.tools.memory.search.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search._query_memory_vectors", new_callable=AsyncMock, return_value=[old_memory]):
             result = await search_memory.ainvoke(
                 {
                     "query": "decision",
@@ -231,7 +257,11 @@ class TestSearchMemoryTool:
             "text": "Buy rice before Diwali",
         }
 
-        with patch(
+        with patch("app.agent.tools.memory.search.get_cached_query_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.set_cached_query_memory", new_callable=AsyncMock), \
+             patch("app.agent.tools.memory.search.get_cached_store_memory", new_callable=AsyncMock, return_value=None), \
+             patch("app.agent.tools.memory.search.get_cached_user_memory", new_callable=AsyncMock, return_value=None), \
+             patch(
             "app.agent.tools.memory.search._query_memory_vectors",
             new_callable=AsyncMock,
             return_value=[dup_memory, dup_memory],  # duplicated

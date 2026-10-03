@@ -61,8 +61,12 @@ from app.agent.service.suppliers.pricing import fetch_supplier_pricing
 from app.agent.service.buyers.search import fetch_buyers
 from app.agent.service.buyers.dues import fetch_buyer_dues
 
+# Sellers
+from app.agent.service.sellers.search import fetch_sellers
+
 # Purchases
 from app.agent.service.purchases.summary import fetch_purchase_summary
+from app.agent.service.purchases.search import fetch_purchases
 
 # Expenses
 from app.agent.service.expenses.summary import fetch_expense_summary
@@ -119,8 +123,12 @@ __all__ = [
     "fetch_buyers",
     "fetch_buyer_dues",
 
+    # Sellers
+    "fetch_sellers",
+
     # Purchases
     "fetch_purchase_summary",
+    "fetch_purchases",
 
     # Expenses
     "fetch_expense_summary",
