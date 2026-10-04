@@ -14,8 +14,8 @@ import json
 import datetime
 import random
 import re
-import multiprocessing
-from typing import Dict, Any
+import asyncio
+from typing import Dict, Any, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -24,10 +24,15 @@ class PythonCodeInput(BaseModel):
         ...,
         description="The Python code block to execute. Use print() to output results or assign the answer to a variable named `result`."
     )
+    user_id: Optional[str] = Field(None, description="Optional user ID context")
+    store_id: Optional[str] = Field(None, description="Optional store ID context")
+
+    class Config:
+        extra = "ignore"
 
 
-def _worker_exec(code: str, queue: multiprocessing.Queue):
-    """Executes Python code in an isolated worker process with strict globals and stdout capture."""
+def _run_sandboxed_code(code: str) -> Dict[str, Any]:
+    """Execute Python code in a restricted execution scope with stdout capture."""
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
@@ -77,27 +82,27 @@ def _worker_exec(code: str, queue: multiprocessing.Queue):
         err_str = stderr_buffer.getvalue()
         result_val = local_vars.get('result', None)
 
-        queue.put({
+        return {
             "success": True,
             "stdout": out_str,
             "stderr": err_str,
             "result": str(result_val) if result_val is not None else None,
             "error": None
-        })
+        }
     except Exception as exc:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-        queue.put({
+        return {
             "success": False,
             "stdout": stdout_buffer.getvalue(),
             "stderr": stderr_buffer.getvalue(),
             "result": None,
             "error": f"{type(exc).__name__}: {str(exc)}"
-        })
+        }
 
 
 @tool("execute_python_code", args_schema=PythonCodeInput)
-async def execute_python_code(code: str) -> str:
+async def execute_python_code(code: str, **kwargs) -> str:
     """Execute Python code for math calculations, data analysis, profit/loss modeling, or algorithms.
     Use print() to show output or set `result = ...` for the return value.
     """
@@ -110,28 +115,25 @@ async def execute_python_code(code: str) -> str:
         if term in code:
             return f"Security Error: Usage of '{term}' is restricted for safety reasons."
 
-    queue = multiprocessing.Queue()
-    proc = multiprocessing.Process(target=_worker_exec, args=(code, queue))
-    proc.start()
-    proc.join(timeout=5.0)  # 5-second execution timeout
-
-    if proc.is_alive():
-        proc.terminate()
-        proc.join()
+    try:
+        # Run execution asynchronously in a worker thread to prevent Windows process spawn deadlocks
+        res = await asyncio.wait_for(
+            asyncio.to_thread(_run_sandboxed_code, code),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
         return "Execution Error: Python code execution timed out (limit: 5 seconds)."
+    except Exception as exc:
+        return f"Execution Error: {type(exc).__name__}: {str(exc)}"
 
-    if not queue.empty():
-        res = queue.get()
-        if res["success"]:
-            output_parts = []
-            if res["stdout"]:
-                output_parts.append(f"Output:\n{res['stdout'].strip()}")
-            if res["result"] is not None:
-                output_parts.append(f"Result: {res['result']}")
-            if not output_parts:
-                output_parts.append("Code executed successfully (no output).")
-            return "\n".join(output_parts)
-        else:
-            return f"Execution Error: {res['error']}\n{res['stderr']}".strip()
-
-    return "Execution Error: Worker process failed to return output."
+    if res["success"]:
+        output_parts = []
+        if res["stdout"]:
+            output_parts.append(f"Output:\n{res['stdout'].strip()}")
+        if res["result"] is not None:
+            output_parts.append(f"Result: {res['result']}")
+        if not output_parts:
+            output_parts.append("Code executed successfully (no output).")
+        return "\n".join(output_parts)
+    else:
+        return f"Execution Error: {res['error']}\n{res['stderr']}".strip()
