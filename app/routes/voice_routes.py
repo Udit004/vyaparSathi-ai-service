@@ -542,6 +542,9 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return ("Calculating demand forecast...", "Forecast complete!")
     elif fn_name == "tool_update_product":
         return (f"Updating product {args.get('name', '')}...", "Product updated!")
+    elif fn_name == "tool_navigate_page":
+        r = args.get("route", "")
+        return (f"Navigating to {r}...", "Navigation complete!")
     else:
         clean_name = fn_name.replace("get_", "").replace("tool_", "").replace("_", " ").title()
         return (f"Executing {clean_name}...", f"{clean_name} complete!")
@@ -869,6 +872,7 @@ async def voice_assistant_websocket(
                                 "type": "tool_complete",
                                 "tool": fn_name,
                                 "label": complete_label,
+                                "args": fn_args,
                             })
 
                             return {

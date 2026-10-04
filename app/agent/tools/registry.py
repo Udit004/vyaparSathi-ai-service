@@ -122,6 +122,9 @@ from app.agent.tools.analytics.store_baselines import get_store_baselines
 from app.agent.tools.purchases.price_history import check_supplier_price_trends
 from app.agent.tools.customers.credit_ledger import get_customer_credit_ledger
 
+# Navigation
+from app.agent.tools.navigation.navigate import tool_navigate_page
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
@@ -248,6 +251,9 @@ VYAPAR_TOOLS = [
     get_store_baselines,
     check_supplier_price_trends,
     get_customer_credit_ledger,
+    
+    # Navigation
+    tool_navigate_page,
 ]
 
 

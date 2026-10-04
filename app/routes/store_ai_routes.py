@@ -45,6 +45,101 @@ router = APIRouter(tags=["store_ai"])
 LOGGER = structlog.get_logger("vyaparsathi.ai.copilot_stream")
 
 
+# ---------------------------------------------------------------------------
+# Mutation tool → (refresh_section, navigate_route) mapping
+# ---------------------------------------------------------------------------
+# When the agent calls one of these write/delete tools the SSE stream will
+# automatically emit:
+#   1. event: refresh   { section }  — UI re-fetches that data section
+#   2. event: navigate  { route }    — UI navigates to the relevant page
+#      (navigate is optional; set to None to skip)
+# Routes use :storeId as a placeholder resolved on the client.
+# ---------------------------------------------------------------------------
+
+MUTATION_TOOL_MAP: dict[str, dict] = {
+    # Products / Inventory
+    "tool_create_product":   {"section": "products",   "route": "/storeDashboard/:storeId/overview"},
+    "tool_update_product":   {"section": "products",   "route": None},
+    "tool_delete_product":   {"section": "products",   "route": None},
+    "tool_adjust_stock":     {"section": "inventory",  "route": None},
+    # Purchases
+    "tool_create_purchase":  {"section": "purchases",  "route": "/storeDashboard/:storeId/purchases"},
+    "tool_update_purchase":  {"section": "purchases",  "route": None},
+    "tool_delete_purchase":  {"section": "purchases",  "route": None},
+    "tool_receive_purchase": {"section": "purchases",  "route": None},
+    # Sellers
+    "tool_create_seller":    {"section": "sellers",    "route": "/storeDashboard/:storeId/sellers"},
+    "tool_update_seller":    {"section": "sellers",    "route": None},
+    "tool_delete_seller":    {"section": "sellers",    "route": None},
+    # Buyers
+    "tool_create_buyer":     {"section": "buyers",     "route": "/storeDashboard/:storeId/buyers"},
+    "tool_update_buyer":     {"section": "buyers",     "route": None},
+    "tool_delete_buyer":     {"section": "buyers",     "route": None},
+    # Expenses
+    "tool_create_expense":   {"section": "expenses",   "route": None},
+    "tool_update_expense":   {"section": "expenses",   "route": None},
+    "tool_delete_expense":   {"section": "expenses",   "route": None},
+}
+
+
+# ---------------------------------------------------------------------------
+# Navigation intent keyword map
+# ---------------------------------------------------------------------------
+# Simple deterministic routing: if the user's message matches any keywords
+# we immediately emit a navigate SSE event and a friendly reply,
+# skipping the full LLM graph. This is fast, reliable, and zero-latency.
+# Keywords are matched case-insensitively on the full lowercased message.
+# ---------------------------------------------------------------------------
+
+# Each entry: list of keyword groups (any match = positive)
+# Value: (route_template, human_label)
+_NAV_ROUTES = [
+    (["analytics", "sales chart", "analytics page", "analytics section"],
+     "/storeDashboard/:storeId/analytics", "Analytics"),
+    (["seller", "sellers", "supplier", "suppliers", "vendor", "vendors"],
+     "/storeDashboard/:storeId/sellers", "Sellers"),
+    (["buyer", "buyers", "customer", "customers"],
+     "/storeDashboard/:storeId/buyers", "Buyers"),
+    (["purchase", "purchases", "purchase section", "purchase page", "purchase history"],
+     "/storeDashboard/:storeId/purchases", "Purchases"),
+    (["billing", "invoice", "bill", "pos", "point of sale"],
+     "/storeDashboard/:storeId/billing", "Billing"),
+    (["billing history", "bill history", "invoice history"],
+     "/storeDashboard/:storeId/billing-history", "Billing History"),
+    (["overview", "home", "dashboard home", "store home", "inventory", "product list", "products"],
+     "/storeDashboard/:storeId/overview", "Overview"),
+    (["ai dashboard", "ai page", "copilot page", "ai section"],
+     "/storeDashboard/:storeId/ai-dashboard", "AI Dashboard"),
+    (["automation", "automations", "automated"],
+     "/storeDashboard/:storeId/automations", "Automations"),
+    (["staff", "employees", "team", "workers"],
+     "/storeDashboard/:storeId/staff", "Staff"),
+    (["settings", "store settings", "setting"],
+     "/storeDashboard/:storeId/settings", "Settings"),
+]
+
+_NAV_TRIGGER_VERBS = (
+    "open", "go to", "navigate to", "take me to", "show", "show me",
+    "switch to", "visit", "load", "bring up", "get to", "move to",
+    "le chalo", "dikha", "dikhao", "ja", "jao",
+)
+
+
+def _detect_navigation_intent(message: str):
+    """
+    Returns (route, label) if the message is a clear navigation request,
+    otherwise returns None.
+    """
+    lowered = message.lower().strip()
+    has_nav_verb = any(verb in lowered for verb in _NAV_TRIGGER_VERBS)
+    if not has_nav_verb:
+        return None
+    for keywords, route, label in _NAV_ROUTES:
+        if any(kw in lowered for kw in keywords):
+            return route, label
+    return None
+
+
 def _json_default(obj: Any) -> Any:
     """JSON serializer for objects not handled by the default encoder."""
     if hasattr(obj, "model_dump"):
@@ -199,6 +294,24 @@ async def _stream_graph_events(
                     default=_json_default,
                 )
                 yield f"event: tool_call\ndata: {tool_payload}\n\n"
+
+                # --- Emit refresh / navigate for mutation tools ---
+                if name in MUTATION_TOOL_MAP:
+                    mutation_meta = MUTATION_TOOL_MAP[name]
+                    refresh_payload = json.dumps({"section": mutation_meta["section"]}, default=_json_default)
+                    yield f"event: refresh\ndata: {refresh_payload}\n\n"
+                    if mutation_meta.get("route"):
+                        nav_payload = json.dumps({"route": mutation_meta["route"]}, default=_json_default)
+                        yield f"event: navigate\ndata: {nav_payload}\n\n"
+
+                # --- Handle explicit navigation tool ---
+                if name == "tool_navigate_page":
+                    # For LangGraph, `data.get("input")` is the input dictionary passed to the tool
+                    tool_input = data.get("input", {})
+                    route = tool_input.get("route")
+                    if route:
+                        nav_payload = json.dumps({"route": route}, default=_json_default)
+                        yield f"event: navigate\ndata: {nav_payload}\n\n"
 
             # --- Memory query notifications ---
             elif kind == "on_chain_start" and name == "memory_query":
@@ -496,6 +609,25 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
 
     async def event_generator():
         try:
+            # ── Navigation fast-path ──────────────────────────────────────────
+            # Detect explicit "go to X page" style requests and immediately
+            # emit a navigate event + friendly reply, bypassing the full graph.
+            nav_result = _detect_navigation_intent(payload.message)
+            if nav_result:
+                nav_route, nav_label = nav_result
+                reply = f"Sure! Navigating you to the **{nav_label}** page now. 🚀"
+                yield f"event: token\ndata: {json.dumps({'text': reply})}\n\n"
+                nav_payload = json.dumps({"route": nav_route}, default=_json_default)
+                yield f"event: navigate\ndata: {nav_payload}\n\n"
+
+                await add_assistant_message(chat_id, reply, metadata={"intent": "navigate", "route": nav_route})
+                chat_title = await ensure_chat_title(chat_id, payload.message)
+                session_data = json.dumps({"chatId": chat_id, "threadId": thread_id, "title": chat_title, "needsClarification": False}, default=_json_default)
+                yield f"event: session\ndata: {session_data}\n\n"
+                yield "event: done\ndata: {}\n\n"
+                return
+            # ── End navigation fast-path ──────────────────────────────────────
+
             checkpointer = get_checkpointer()
             graph = build_graph(checkpointer=checkpointer)
 
