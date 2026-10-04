@@ -208,7 +208,7 @@ async def create_purchase_order_record(
         "paymentStatus": status,
         "stockUpdated": bool(received_into_stock),
         "orderStatus": "received" if received_into_stock else "ordered",
-        "notes": notes or f"Ordered via Vyapar Sathi AI on {datetime.now().strftime('%d %b %Y, %I:%M %p')}",
+        "notes": notes or f"Ordered via Vyapar Sakha AI on {datetime.now().strftime('%d %b %Y, %I:%M %p')}",
         "createdAt": datetime.now(timezone.utc),
         "updatedAt": datetime.now(timezone.utc),
     }

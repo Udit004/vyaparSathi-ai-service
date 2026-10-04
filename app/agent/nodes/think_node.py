@@ -29,7 +29,7 @@ from langchain_core.messages import SystemMessage
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.think")
 
 _STALE_GUARD_REFUSAL_MARKERS = (
-    "that's outside what vyapar copilot handles",
+    "that's outside what vyapar sakha handles",
     "i'm sorry, but i can't help with that request",
 )
 

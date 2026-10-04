@@ -527,7 +527,7 @@ async def synthesize_node(state: WebResearchState) -> Dict[str, Any]:
 
     if llm:
         sys_prompt = (
-            "You are an expert web research analyst for VyaparSathi.\n"
+            "You are an expert web research analyst for VyaparSakha.\n"
             f"SYSTEM TIME: Today's date is {curr_date_str} (Year {curr_year}).\n"
             f"Synthesize a clear, accurate, professional answer to the user's research query using ONLY the provided evidence.\n\n"
             "STRICT RULES:\n"

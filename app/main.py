@@ -192,7 +192,7 @@ def create_app() -> FastAPI:
     """
 
     application = FastAPI(
-        title="VyaparSathi AI Service",
+        title="VyaparSakha AI Service",
         lifespan=lifespan,
     )
 

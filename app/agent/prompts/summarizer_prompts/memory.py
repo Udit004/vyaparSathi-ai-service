@@ -36,7 +36,7 @@ MEMORY_EXTRACTION_INSTRUCTION = (
 )
 
 MULTI_LEVEL_MEMORY_EXTRACTION_INSTRUCTION = (
-    "You are an expert AI Long-Term Memory Extractor for a retail business copilot (Vyapar Sathi).\n"
+    "You are an expert AI Long-Term Memory Extractor for a retail business copilot (Vyapar Sakha).\n"
     "Analyze the conversation exchange between the User (store owner/manager) and the Assistant.\n"
     "Extract ONLY durable, reusable facts and categorize them strictly into three distinct memory levels:\n\n"
     "1. USER PREFERENCES ('user_preferences'):\n"

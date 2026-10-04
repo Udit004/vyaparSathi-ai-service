@@ -1,7 +1,7 @@
 """
 app/agent/memory/__init__.py
 ============================
-Public API for the Vyapar Sathi long-term memory package.
+Public API for the Vyapar Sakha long-term memory package.
 
 Exposes all symbols that the rest of the application imports from
 `app.agent.memory` so that neither the graph nor external callers need

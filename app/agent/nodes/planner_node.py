@@ -18,7 +18,7 @@ from app.agent.tools.registry import VYAPAR_TOOLS
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.planner")
 
-_PLANNER_PROMPT = """You are the Vyapar Copilot Planner.
+_PLANNER_PROMPT = """You are the Vyapar Sakha Planner.
 Your job is to analyze the user's complex request and build a simple execution plan of 2 to 4 actionable steps.
 Do NOT execute tools directly. Do NOT invent hypothetical external APIs.
 Only recommend steps that utilize the system's available tools.

@@ -203,7 +203,7 @@ def _fallback_word_spec(title: str, data: Any) -> dict[str, Any]:
     return {
         "format": "docx",
         "title": title,
-        "subtitle": "Vyapar Sathi Business Report",
+        "subtitle": "Vyapar Sakha Business Report",
         "filename": title.lower().replace(" ", "_"),
         "sections": sections
     }

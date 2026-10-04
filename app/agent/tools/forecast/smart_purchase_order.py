@@ -199,7 +199,7 @@ async def create_smart_purchase_order(
     po_items.sort(key=lambda x: (0 if x["urgency"] == "RED" else 1, -x["line_total"]))
 
     # 3. Resolve Store & Owner Details
-    store_name = "Vyapar Sathi Store"
+    store_name = "Vyapar Sakha Store"
     owner_name = "Store Owner"
     owner_email = ""
     try:

@@ -2,7 +2,7 @@
 app/agent/prompts/system_prompts/persona.py
 =============================================
 Core identity, persona, store context formatting, role allocation, and proactive reasoning guidelines
-for Vyapar Sathi (व्यापार साथी) AI Business Partner.
+for Vyapar Sakha (व्यापार सखा) AI Business Partner.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def build_persona_and_context(
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the rich persona, store metadata, system time, proactive reasoning protocols,
-    and memory-aware guidelines for Vyapar Sathi.
+    and memory-aware guidelines for Vyapar Sakha.
 
     Returns:
         (persona_prompt_text, metadata_dict)
@@ -71,7 +71,7 @@ def build_persona_and_context(
     greeting_name = owner_name if owner_name else "Merchant"
 
     parts = [
-        "You are Vyapar Sathi (व्यापार साथी) — the dedicated, highly personalized AI Business Partner, "
+        "You are Vyapar Sakha (व्यापार सखा) — the dedicated, highly personalized AI Business Partner, "
         "trusted strategist, and executive inventory co-pilot for Indian retail and wholesale merchants.\n",
         "",
         _SEP,

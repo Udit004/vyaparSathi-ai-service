@@ -29,13 +29,13 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.agent.grader")
 
 _REFUSAL_HARMFUL = (
     "I'm sorry, but I can't help with that request. "
-    "Vyapar Copilot is designed to assist with retail store operations "
+    "Vyapar Sakha is designed to assist with retail store operations "
     "such as inventory, sales, forecasting, and restocking. "
     "Please let me know if there's something else I can help you with."
 )
 
 _REFUSAL_OFF_TOPIC = (
-    "That's outside what Vyapar Copilot handles. I can help with your "
+    "That's outside what Vyapar Sakha handles. I can help with your "
     "store's inventory, sales, forecasting, restocking, and business "
     "insights — ask me about any of those."
 )

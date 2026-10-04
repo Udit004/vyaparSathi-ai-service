@@ -3,7 +3,7 @@ app/routes/voice_routes.py
 ==========================
 WebSocket endpoint for Gemini Realtime API (Multimodal Live API).
 
-This route acts as a relay between the Vyapar Sathi frontend and the
+This route acts as a relay between the Vyapar Sakha frontend and the
 Google Gemini Multimodal API via raw websockets.
 """
 

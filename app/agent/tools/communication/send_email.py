@@ -187,7 +187,7 @@ async def _fetch_store_owner_info(
     """
     Resolves store and owner info: returns (store_name, owner_name, owner_email, owner_phone).
     """
-    store_name = "Vyapar Sathi Store"
+    store_name = "Vyapar Sakha Store"
     owner_name = "Store Owner"
     owner_email = ""
     owner_phone = ""
@@ -237,7 +237,7 @@ async def _fetch_store_owner_info(
 async def send_store_email(
     recipient_email: Optional[str] = None,
     recipient_name: Optional[str] = None,
-    subject: str = "Official Message from Vyapar Sathi",
+    subject: str = "Official Message from Vyapar Sakha",
     body_html: Optional[str] = None,
     body_text: Optional[str] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
@@ -420,7 +420,7 @@ async def send_store_email(
                                             seller_name=resolved_name or target_email,
                                             items=formatted_items,
                                             invoice_number=d_po_num,
-                                            notes=f"Ordered & emailed via Vyapar Sathi AI to {target_email} on {datetime.datetime.now().strftime('%d %b %Y, %I:%M %p')}",
+                                            notes=f"Ordered & emailed via Vyapar Sakha AI to {target_email} on {datetime.datetime.now().strftime('%d %b %Y, %I:%M %p')}",
                                         )
                                         purchase_rec_result = rec_res
                                         n["status"] = "completed"

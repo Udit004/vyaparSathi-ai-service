@@ -45,7 +45,7 @@ _COMPLEX_TERMS = (
 )
 
 _GREETING_REPLIES = [
-    "Hello! 👋 I'm Vyapar Copilot. How can I help with your store today?",
+    "Hello! 👋 I'm Vyapar Sakha. How can I help with your store today?",
     "Hi there! 😊 Ready to help with your inventory, sales, or restocking. What do you need?",
     "Hey! Welcome back. Ask me anything about your store — inventory, sales, forecasts, and more.",
     "Hello! How can I assist you with your store operations today?",
@@ -59,7 +59,7 @@ _OPENER_TERMS = {"hi", "hello", "hey", "hii", "helo", "hola", "good morning", "g
 _FAREWELL_REPLIES = [
     "Good night! 🌙 Rest well. I'll be here when you need me.",
     "Good night! 🌙 Take care. Come back anytime your store needs attention.",
-    "Bye! 👋 See you next time. Vyapar Copilot is always ready.",
+    "Bye! 👋 See you next time. Vyapar Sakha is always ready.",
 ]
 _THANKS_REPLIES = [
     "You're welcome! 😊 Let me know if there's anything else I can help with.",
@@ -67,7 +67,7 @@ _THANKS_REPLIES = [
     "Glad I could help! Ask me anytime. 😊",
 ]
 _OPENER_REPLIES = [
-    "Hello! 👋 I'm Vyapar Copilot. How can I help with your store today?",
+    "Hello! 👋 I'm Vyapar Sakha. How can I help with your store today?",
     "Hi there! 😊 Ready to help with your inventory, sales, or restocking.",
     "Hey! Ask me anything about your store — inventory, sales, forecasts, and more.",
     "Hello! How can I assist with your store operations today?",

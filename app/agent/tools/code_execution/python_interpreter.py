@@ -1,7 +1,7 @@
 """
 app/agent/tools/code_execution/python_interpreter.py
 ======================================================
-Sandboxed Python Execution Tool for Vyapar Sathi AI Agent & Voice Assistant.
+Sandboxed Python Execution Tool for Vyapar Sakha AI Agent & Voice Assistant.
 
 Enables the AI to perform complex mathematical calculations, data analysis,
 financial forecasts, and custom algorithms safely.

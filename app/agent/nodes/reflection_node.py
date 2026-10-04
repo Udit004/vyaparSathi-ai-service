@@ -24,7 +24,7 @@ async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
     LOGGER.info("reflection_node_start", reason=reason)
     
     system_prompt = (
-        "You are the reflection component of Vyapar Copilot. "
+        "You are the reflection component of Vyapar Sakha. "
         "The previous approach failed. The Critic identified what is missing. "
         "Provide an improved execution direction. Which tools should be used next to get the missing information? "
         "Respond with a short, direct paragraph on what to do differently to fix it. "

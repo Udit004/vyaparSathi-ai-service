@@ -45,8 +45,10 @@ async def compare_stores(
     across all stores owned by the merchant user account.
     """
     target_user = user_id or kwargs.get("user_id") or "default_user"
+    target_store = store_id or kwargs.get("store_id")
     return await compare_user_stores(
         user_id=target_user,
         store_ids=store_ids,
-        days_lookback=days_lookback
+        days_lookback=days_lookback,
+        current_store_id=target_store,
     )
