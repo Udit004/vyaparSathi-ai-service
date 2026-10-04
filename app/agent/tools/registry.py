@@ -29,6 +29,8 @@ from app.agent.tools.forecast.restock import get_restock_priorities
 from app.agent.tools.forecast.stockout import get_stockout_estimate
 from app.agent.tools.forecast.restock_budget import calculate_restock_budget
 from app.agent.tools.forecast.smart_purchase_order import create_smart_purchase_order
+from app.agent.tools.forecast.festival_planner import get_festival_demand_planner
+
 
 # Insights & Daily Action Plan
 from app.agent.tools.insights.store_insights import get_store_insights
@@ -89,7 +91,7 @@ from app.agent.tools.buyers.write import tool_create_buyer, tool_update_buyer, t
 from app.agent.tools.sellers.search import search_sellers
 from app.agent.tools.sellers.write import tool_create_seller, tool_update_seller, tool_delete_seller
 
-# Purchases
+# Purchases & Invoice OCR
 from app.agent.tools.purchases.summary import get_purchase_summary
 from app.agent.tools.purchases.search import search_purchases
 from app.agent.tools.purchases.write import (
@@ -98,6 +100,7 @@ from app.agent.tools.purchases.write import (
     tool_update_purchase,
     tool_delete_purchase,
 )
+from app.agent.tools.purchases.invoice_ocr import parse_supplier_invoice_image
 
 # Expenses
 from app.agent.tools.expenses.summary import get_expense_summary
@@ -151,6 +154,7 @@ VYAPAR_TOOLS = [
     get_stockout_estimate,
     calculate_restock_budget,
     create_smart_purchase_order,
+    get_festival_demand_planner,
     
     # Insights & Action Plan
     get_store_insights,
@@ -207,13 +211,14 @@ VYAPAR_TOOLS = [
     tool_update_seller,
     tool_delete_seller,
 
-    # Purchases
+    # Purchases & Invoice OCR
     get_purchase_summary,
     search_purchases,
     tool_create_purchase,
     tool_receive_purchase,
     tool_update_purchase,
     tool_delete_purchase,
+    parse_supplier_invoice_image,
 
     # Expenses
     get_expense_summary,

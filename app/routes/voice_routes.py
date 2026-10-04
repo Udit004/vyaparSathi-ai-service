@@ -18,7 +18,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import websockets
 
+from bson import ObjectId
 from app.config.settings import get_settings
+from app.config.database import get_database
+from app.agent.service.sales.summary import fetch_sales_summary, _resolve_store_id
+from app.agent.memory.redis_cache import get_redis
 from app.agent.tools.registry import VYAPAR_TOOLS
 from app.agent.nodes.memory_query import _bootstrap_user_memory, _bootstrap_store_memory
 from app.agent.prompts.voice_prompt import build_voice_system_prompt
@@ -258,11 +262,196 @@ async def _bootstrap_voice_memory_context(user_id: str, store_id: str):
     return user_memories or [], store_memories or []
 
 
+async def _bootstrap_store_details_context(user_id: str, store_id: str) -> str:
+    """Fetch complete live store profile, contact email, user details, and key business KPIs from MongoDB."""
+    try:
+        db = get_database()
+        store_oid = await _resolve_store_id(db, store_id)
 
+        # 1. Fetch Store Profile document
+        store_doc = {}
+        if store_oid:
+            store_doc = (await db["stores"].find_one({"_id": store_oid})) or {}
+
+        store_name = store_doc.get("name") or store_doc.get("storeName") or "Vyapar Store"
+        store_email = store_doc.get("email") or store_doc.get("contactEmail") or "Not configured"
+        store_phone = store_doc.get("phone") or store_doc.get("contactPhone") or "Not configured"
+        store_address = store_doc.get("address") or store_doc.get("city") or "India"
+        gst_number = store_doc.get("gstin") or store_doc.get("gstNumber") or "N/A"
+
+        # 2. Fetch User Profile document
+        user_name = "Store Owner"
+        user_email = store_email
+        if user_id:
+            user_doc = None
+            try:
+                user_doc = await db["users"].find_one({"_id": ObjectId(user_id)})
+            except Exception:
+                user_doc = await db["users"].find_one({"$or": [{"uid": user_id}, {"_id": user_id}]})
+            if user_doc:
+                user_name = user_doc.get("name") or user_doc.get("displayName") or user_doc.get("fullName") or "Store Owner"
+                user_email = user_doc.get("email") or user_doc.get("userEmail") or store_email
+
+        # 3. Calculate Key Store Metrics
+        total_products = 0
+        low_stock_count = 0
+        total_suppliers = 0
+        total_customers = 0
+
+        if store_oid:
+            total_products = await db["products"].count_documents({"store": store_oid, "isActive": {"$ne": False}})
+            low_stock_count = await db["products"].count_documents({
+                "store": store_oid,
+                "isActive": {"$ne": False},
+                "$expr": {"$lte": ["$stock", {"$ifNull": ["$minStock", 5]}]}
+            })
+            total_suppliers = await db["sellers"].count_documents({"store": store_oid})
+            total_customers = await db["buyers"].count_documents({"store": store_oid})
+
+        # 4. Fetch 30-Day Sales KPIs
+        sales_kpi = await fetch_sales_summary(store_id, days_lookback=30)
+        total_rev = sales_kpi.get("total_revenue", 0.0)
+        sales_count = sales_kpi.get("total_sales_count", 0)
+
+        # 5. Fetch Recent Dispatched Emails / Notes from Redis Diary
+        recent_notes = []
+        try:
+            redis_client = await get_redis()
+            diary_key = f"store:{store_id}:notes"
+            recent_notes_raw = await redis_client.lrange(diary_key, 0, 5)
+            recent_notes = [n.decode("utf-8") for n in recent_notes_raw if n]
+        except Exception:
+            pass
+
+        context_lines = [
+            "==================================================",
+            "LIVE STORE PROFILE & BUSINESS CONTEXT",
+            "==================================================",
+            f"- Store Name: {store_name}",
+            f"- Store ID: {store_id}",
+            f"- Owner / Merchant Name: {user_name}",
+            f"- Store Official Email: {store_email}",
+            f"- User Account Email: {user_email}",
+            f"- Contact Phone: {store_phone}",
+            f"- Location: {store_address}",
+            f"- GSTIN: {gst_number}",
+            "",
+            "CURRENT INVENTORY & FINANCIAL OVERVIEW (30 DAYS):",
+            f"- Active Catalog Products: {total_products} items",
+            f"- Low-Stock Products: {low_stock_count} items requiring restock",
+            f"- Connected Suppliers / Distributors: {total_suppliers} vendors",
+            f"- Registered Customers / Buyers: {total_customers} clients",
+            f"- 30-Day Total Sales Revenue: ₹{total_rev:,.2f} ({sales_count} completed orders)",
+        ]
+
+        if recent_notes:
+            context_lines.extend([
+                "",
+                "RECENT MERCHANT DIARY & EMAIL DISPATCH LOGS:",
+                * [f"  * {note}" for note in recent_notes]
+            ])
+
+        return "\n".join(context_lines)
+    except Exception as exc:
+        LOGGER.error("voice_store_details_bootstrap_failed", store_id=store_id, error=str(exc))
+        return f"STORE PROFILE: Store ID: {store_id}"
+
+
+async def _persist_voice_session_history_and_memory(
+    user_id: str,
+    store_id: str,
+    transcript: List[Dict[str, str]],
+):
+    """
+    Post-Call Persistence Pipeline:
+    1. Deduplicate & clean session transcript.
+    2. Create ChatSession document in MongoDB ('agent_chats').
+    3. Save each user & assistant message to MongoDB ('agent_chat_messages').
+    4. Generate & update intelligent chat session title.
+    5. Extract & persist long-term memories into Pinecone & Redis cache.
+    """
+    if not transcript:
+        LOGGER.info("voice_session_persistence_skipped_empty_transcript")
+        return
+
+    try:
+        from app.services.chat_history_service import (
+            create_chat_session,
+            add_user_message,
+            add_assistant_message,
+            generate_chat_title,
+            update_chat_session,
+        )
+        from app.agent.memory import process_and_persist_memory
+
+        # 1. Create Chat Session in MongoDB with 'New Chat' placeholder
+        session = await create_chat_session(
+            user_id=user_id,
+            store_id=store_id,
+            title="New Chat",
+            metadata={"channel": "voice_realtime", "message_count": len(transcript)},
+        )
+
+        # 2. Add all messages to MongoDB agent_chat_messages
+        valid_msg_count = 0
+        user_prompts = []
+        assistant_responses = []
+
+        for msg in transcript:
+            role = msg.get("role")
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                await add_user_message(session.chat_id, content)
+                user_prompts.append(content)
+                valid_msg_count += 1
+            elif role == "assistant":
+                await add_assistant_message(session.chat_id, content, metadata={"channel": "voice_realtime"})
+                assistant_responses.append(content)
+                valid_msg_count += 1
+
+        if valid_msg_count == 0:
+            LOGGER.warning("voice_session_no_valid_messages_saved", chat_id=session.chat_id)
+            return
+
+        # 3. Determine prompt seed for Title Generation
+        prompt_seed = user_prompts[0] if user_prompts else (assistant_responses[0] if assistant_responses else "Voice Assistant Conversation")
+
+        # 4. Generate and save smart title with 🎙️ Voice Call badge
+        raw_title = await generate_chat_title(session.chat_id, prompt_seed)
+        if raw_title and raw_title != "New Chat":
+            smart_title = f"🎙️ {raw_title}" if not raw_title.startswith("🎙️") else raw_title
+        else:
+            smart_title = "🎙️ Voice Call Session"
+
+        await update_chat_session(session.chat_id, title=smart_title, message_count=valid_msg_count)
+
+        LOGGER.info(
+            "voice_session_history_persisted",
+            chat_id=session.chat_id,
+            user_id=user_id,
+            store_id=store_id,
+            title=smart_title,
+            message_count=valid_msg_count,
+        )
+
+        # 5. Extract Long-Term Memory & Persist to Pinecone / Redis
+        memory_result = await process_and_persist_memory(
+            user_id=user_id,
+            store_id=store_id,
+            messages=transcript,
+        )
+        LOGGER.info("voice_session_memory_persisted", memory_result=memory_result)
+
+    except Exception as exc:
+        LOGGER.error("voice_session_persistence_failed", user_id=user_id, store_id=store_id, error=str(exc), exc_info=True)
 
 
 def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
-    if fn_name == "execute_python_code":
+    if fn_name == "parse_supplier_invoice_image":
+        return ("Scanning paper bill photo with Vision AI...", "Invoice items extracted successfully!")
+    elif fn_name == "execute_python_code":
         return ("Running custom Python calculation...", "Python calculation completed!")
     elif fn_name == "tool_create_purchase":
         s = args.get("seller_name", "seller")
@@ -323,6 +512,8 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return ("Analyzing customer credit & udhaar risk...", "Credit risk analysis ready!")
     elif fn_name == "calculate_restock_budget":
         return ("Calculating restock budget & distributor payouts...", "Restock budget ready!")
+    elif fn_name == "get_festival_demand_planner":
+        return ("Scanning Indian festival calendar & calculating seasonal demand...", "Festival demand planner ready!")
     elif fn_name == "generate_deal_bundle_recommendation":
         return ("Generating profitable promotional combos...", "Bundle deals ready!")
     elif fn_name == "get_store_goal_progress_report":
@@ -355,9 +546,22 @@ async def voice_assistant_websocket(
         await websocket.close(code=1008)
         return
 
-    # 1. Pre-load Memory (best-effort only; Pinecone outages should not break voice chat)
-    LOGGER.info("voice_loading_memory", user_id=user_id, store_id=store_id)
-    user_memories, store_memories = await _bootstrap_voice_memory_context(user_id, store_id)
+    # 1. Pre-load Memory and Store Profile Context in Parallel
+    LOGGER.info("voice_loading_context", user_id=user_id, store_id=store_id)
+    bootstrap_results = await asyncio.gather(
+        _bootstrap_voice_memory_context(user_id, store_id),
+        _bootstrap_store_details_context(user_id, store_id),
+        return_exceptions=True
+    )
+    
+    mem_res, store_context = bootstrap_results[0], bootstrap_results[1]
+    if isinstance(mem_res, Exception) or not isinstance(mem_res, tuple):
+        user_memories, store_memories = [], []
+    else:
+        user_memories, store_memories = mem_res[0], mem_res[1]
+
+    if isinstance(store_context, Exception):
+        store_context = f"STORE PROFILE: Store ID: {store_id}"
 
     if user_memories or store_memories:
         memory_context = (
@@ -371,7 +575,7 @@ async def voice_assistant_websocket(
             "Proceed with a fresh voice conversation using the current context only."
         )
 
-    system_prompt = build_voice_system_prompt(user_id, store_id, memory_context)
+    system_prompt = build_voice_system_prompt(user_id, store_id, memory_context, store_context)
 
     gemini_ws = None
     try:
@@ -381,8 +585,16 @@ async def voice_assistant_websocket(
         # Signal the frontend that Gemini is ready
         await websocket.send_json({"type": "ready"})
 
-        # Send client audio to Gemini
+        # Session scope transcript & image caches
+        last_uploaded_image = {"b64": None, "mime": None}
+        session_transcript: List[Dict[str, str]] = []
+        current_user_speech: List[str] = []
+        current_ai_speech: List[str] = []
+        user_audio_received = False
+
+        # Send client audio / text / image control frames to Gemini
         async def receive_from_client():
+            nonlocal user_audio_received
             audio_chunk_count = 0
             activity_started = False
             try:
@@ -392,6 +604,7 @@ async def voice_assistant_websocket(
                         raise WebSocketDisconnect
 
                     if message.get("bytes") is not None:
+                        user_audio_received = True
                         if not activity_started:
                             await gemini_ws.send(json.dumps(_build_gemini_activity_start_message()))
                             activity_started = True
@@ -411,7 +624,9 @@ async def voice_assistant_websocket(
 
                     if message.get("text"):
                         control = json.loads(message["text"])
-                        if control.get("type") == "audio_stream_end":
+                        c_type = control.get("type")
+
+                        if c_type == "audio_stream_end":
                             if activity_started:
                                 await gemini_ws.send(json.dumps(_build_gemini_audio_stream_end_message()))
                                 activity_started = False
@@ -423,6 +638,81 @@ async def voice_assistant_websocket(
                                 "type": "audio_received",
                                 "chunks": audio_chunk_count,
                             })
+
+                        elif c_type == "user_text" and control.get("text"):
+                            user_prompt = control["text"]
+                            session_transcript.append({"role": "user", "content": user_prompt})
+                            LOGGER.info("voice_text_prompt_received", text=user_prompt)
+                            turn_msg = {
+                                "clientContent": {
+                                    "turns": [
+                                        {
+                                            "role": "user",
+                                            "parts": [{"text": user_prompt}]
+                                        }
+                                    ],
+                                    "turnComplete": True
+                                }
+                            }
+                            await gemini_ws.send(json.dumps(turn_msg))
+
+                        elif c_type == "image_input" and control.get("data"):
+                            b64_data = control["data"]
+                            mime_type = control.get("mime_type", "image/jpeg")
+                            caption = (control.get("text") or "").strip()
+
+                            # Save to session cache for Vision OCR tool fallback
+                            last_uploaded_image["b64"] = b64_data
+                            last_uploaded_image["mime"] = mime_type
+
+                            prompt_caption = caption if caption else "I have uploaded an image or paper bill photo. Please analyze it carefully."
+                            session_transcript.append({"role": "user", "content": f"[Uploaded Image] {prompt_caption}"})
+
+                            if not caption:
+                                caption = (
+                                    "I have uploaded an image or paper bill photo. "
+                                    "Please analyze it carefully. If it is a paper invoice or bill, "
+                                    "use parse_supplier_invoice_image to extract products, line items, and prices, and tell me what you found."
+                                )
+
+                            LOGGER.info("voice_image_input_received", mime_type=mime_type, caption=caption)
+
+                            # 1. Forward media chunk to Gemini Realtime input
+                            img_chunk = {
+                                "realtimeInput": {
+                                    "mediaChunks": [
+                                        {
+                                            "mimeType": mime_type,
+                                            "data": b64_data
+                                        }
+                                    ]
+                                }
+                            }
+                            await gemini_ws.send(json.dumps(img_chunk))
+
+                            # 2. Send complete user turn with inlineData and text prompt to force turn execution
+                            turn_msg = {
+                                "clientContent": {
+                                    "turns": [
+                                        {
+                                            "role": "user",
+                                            "parts": [
+                                                {
+                                                    "inlineData": {
+                                                        "mimeType": mime_type,
+                                                        "data": b64_data
+                                                    }
+                                                },
+                                                {
+                                                    "text": caption
+                                                }
+                                            ]
+                                        }
+                                    ],
+                                    "turnComplete": True
+                                }
+                            }
+                            await gemini_ws.send(json.dumps(turn_msg))
             except WebSocketDisconnect:
                 LOGGER.info("client_disconnected")
             except Exception as e:
@@ -430,6 +720,7 @@ async def voice_assistant_websocket(
 
         # Receive Gemini audio/tool-calls and send back to client
         async def receive_from_gemini():
+            nonlocal user_audio_received
             from app.agent.tools.registry import get_tool_by_name
             try:
                 while True:
@@ -458,9 +749,20 @@ async def voice_assistant_websocket(
                         )
 
                         # Handle Audio parts and text parts
-                        if "modelTurn" in server_content:
+                        if "outputTranscription" in server_content:
+                            out_text = server_content["outputTranscription"].get("text", "")
+                            if out_text:
+                                if not current_ai_speech or current_ai_speech[-1] != out_text:
+                                    current_ai_speech.append(out_text)
+                                await websocket.send_json({
+                                    "type": "ai_transcript",
+                                    "text": out_text,
+                                })
+                        elif "modelTurn" in server_content:
                             for part in server_content["modelTurn"].get("parts", []):
                                 if "text" in part and part["text"]:
+                                    if not current_ai_speech or current_ai_speech[-1] != part["text"]:
+                                        current_ai_speech.append(part["text"])
                                     await websocket.send_json({
                                         "type": "ai_text",
                                         "text": part["text"],
@@ -471,23 +773,32 @@ async def voice_assistant_websocket(
                                         pcm_bytes = base64.b64decode(pcm_base64)
                                         await websocket.send_bytes(pcm_bytes)
 
-                        if "outputTranscription" in server_content:
-                            out_text = server_content["outputTranscription"].get("text", "")
-                            if out_text:
-                                await websocket.send_json({
-                                    "type": "ai_transcript",
-                                    "text": out_text,
-                                })
-
                         if "inputTranscription" in server_content:
                             in_text = server_content["inputTranscription"].get("text", "")
                             if in_text:
+                                current_user_speech.append(in_text)
                                 await websocket.send_json({
                                     "type": "user_transcript",
                                     "text": in_text,
                                 })
 
                         if server_content.get("turnComplete"):
+                            if user_audio_received and not current_user_speech:
+                                current_user_speech.append("Voice Input")
+                                user_audio_received = False
+
+                            if current_user_speech:
+                                u_full = " ".join(current_user_speech).strip()
+                                if u_full:
+                                    session_transcript.append({"role": "user", "content": u_full})
+                                current_user_speech.clear()
+
+                            if current_ai_speech:
+                                ai_full = " ".join(current_ai_speech).strip()
+                                if ai_full:
+                                    session_transcript.append({"role": "assistant", "content": ai_full})
+                                current_ai_speech.clear()
+
                             await websocket.send_json({
                                 "type": "turn_complete",
                             })
@@ -517,6 +828,14 @@ async def voice_assistant_websocket(
                                     # Inject context that tools normally get from state
                                     fn_args.setdefault("user_id", user_id)
                                     fn_args.setdefault("store_id", store_id)
+
+                                    # Image fallback for Vision OCR tool
+                                    if fn_name == "parse_supplier_invoice_image":
+                                        img_val = str(fn_args.get("image_input", "")).strip()
+                                        if not img_val or not (img_val.startswith("data:") or img_val.startswith("http://") or img_val.startswith("https://") or len(img_val) > 500):
+                                            if last_uploaded_image.get("b64"):
+                                                fn_args["image_input"] = f"data:{last_uploaded_image['mime']};base64,{last_uploaded_image['b64']}"
+
                                     result = await tool.ainvoke(
                                         fn_args,
                                         config={"configurable": {"user_id": user_id, "store_id": store_id}},
@@ -591,3 +910,22 @@ async def voice_assistant_websocket(
             await websocket.close()
         except Exception:
             pass
+
+        # Flush any uncommitted speech turns
+        if user_audio_received and not current_user_speech:
+            current_user_speech.append("Voice Input")
+        if current_user_speech:
+            u_full = " ".join(current_user_speech).strip()
+            if u_full:
+                session_transcript.append({"role": "user", "content": u_full})
+        if current_ai_speech:
+            ai_full = " ".join(current_ai_speech).strip()
+            if ai_full:
+                session_transcript.append({"role": "assistant", "content": ai_full})
+
+        if session_transcript:
+            LOGGER.info("voice_session_ended_persisting_history", message_count=len(session_transcript))
+            try:
+                await _persist_voice_session_history_and_memory(user_id, store_id, list(session_transcript))
+            except Exception as exc:
+                LOGGER.error("voice_session_persistence_error", error=str(exc), exc_info=True)

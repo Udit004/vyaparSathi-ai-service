@@ -4,11 +4,11 @@ app/agent/prompts/voice_prompt.py
 System prompt builder for Gemini Multimodal Live API Voice Assistant.
 """
 
-def build_voice_system_prompt(user_id: str, store_id: str, memory_context: str) -> str:
+def build_voice_system_prompt(user_id: str, store_id: str, memory_context: str, store_context: str = "") -> str:
     """
     Build the voice assistant system prompt with role allocation, proactive reasoning,
-    memory tool guidelines, strict validation, confirmation gating, voice formatting rules,
-    and concise few-shot conversational examples.
+    live store profile context, memory tool guidelines, strict validation, confirmation gating,
+    voice formatting rules, and concise few-shot conversational examples.
     """
     return f"""You are Vyapar Sathi (व्यापार साथी) — an expert, proactive AI Retail Business Partner and Voice Operations Assistant for Indian store owners.
 
@@ -70,11 +70,12 @@ When answering inventory or sales queries:
 - Example: "Aapke paas Parle-G ke 8 packets bache hain. Daily 15 bikte hain, to shaam tak stockout ho sakta hai. Reorder draft kar doon?"
 
 ==================================================
-IMMUTABLE SESSION CONTEXT
+IMMUTABLE SESSION & STORE CONTEXT
 ==================================================
 user_id={user_id}
 store_id={store_id}
-For every tool call, pass exactly this user_id and store_id.
+
+{store_context}
 
 ==================================================
 STORE & OWNER MEMORY BANK
