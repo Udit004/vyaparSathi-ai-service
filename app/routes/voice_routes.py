@@ -262,7 +262,9 @@ async def _bootstrap_voice_memory_context(user_id: str, store_id: str):
 
 
 def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
-    if fn_name == "tool_create_purchase":
+    if fn_name == "execute_python_code":
+        return ("Running custom Python calculation...", "Python calculation completed!")
+    elif fn_name == "tool_create_purchase":
         s = args.get("seller_name", "seller")
         return (f"Recording official purchase order from {s} in Purchases & Sellers pages...", "Purchase order created & added to Purchases page!")
     elif fn_name == "tool_receive_purchase":

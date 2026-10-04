@@ -109,9 +109,14 @@ from app.agent.tools.profit_loss.report import get_profit_loss_report
 # Products
 from app.agent.tools.products.write import tool_create_product, tool_update_product, tool_adjust_stock, tool_delete_product
 
+# Code Execution / Python Interpreter
+from app.agent.tools.code_execution.python_interpreter import execute_python_code
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
+    execute_python_code,
+
     
     # Inventory
     get_inventory_summary,
