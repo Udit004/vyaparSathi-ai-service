@@ -42,6 +42,7 @@ from app.agent.prompts.summarizer_prompts import (
     title as summarizer_title,
 )
 from app.agent.prompts.classifier_prompts import CLASSIFIER_HARM_INSTRUCTION
+from app.agent.prompts.voice_prompt import build_voice_system_prompt
 
 __all__ = [
     "agent_base",
@@ -54,4 +55,5 @@ __all__ = [
     "summarizer_history",
     "summarizer_title",
     "CLASSIFIER_HARM_INSTRUCTION",
-]
+    "build_voice_system_prompt",
+]
