@@ -26,6 +26,7 @@ from app.agent.memory.redis_cache import get_redis
 from app.agent.tools.registry import VYAPAR_TOOLS
 from app.agent.nodes.memory_query import _bootstrap_user_memory, _bootstrap_store_memory
 from app.agent.prompts.voice_prompt import build_voice_system_prompt
+_build_voice_system_prompt = build_voice_system_prompt
 
 router = APIRouter()
 LOGGER = structlog.get_logger("vyaparsathi.ai.voice")
@@ -37,19 +38,24 @@ def _decode_gemini_message(msg):
         payload = bytes(msg)
         if not payload:
             return None
-        try:
-            return json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return {"binary": payload}
+        # Fast path: binary PCM audio frames do not start with JSON '{'
+        if payload.startswith(b"{"):
+            try:
+                return json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {"binary": payload}
+        return {"binary": payload}
 
     if isinstance(msg, str):
         text = msg.strip()
         if not text:
             return None
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"binary": text.encode("utf-8")}
+        if text.startswith("{"):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"binary": text.encode("utf-8")}
+        return {"binary": text.encode("utf-8")}
 
     return None
 
@@ -518,6 +524,16 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return ("Generating profitable promotional combos...", "Bundle deals ready!")
     elif fn_name == "get_store_goal_progress_report":
         return ("Calculating progress towards your monthly goal...", "Goal progress report ready!")
+    elif fn_name == "manage_merchant_memories":
+        return ("Accessing your long-term merchant preferences & profile...", "Merchant memory updated!")
+    elif fn_name == "manage_proactive_insights":
+        return ("Scanning stock velocity, prices, & festival calendar for proactive advice...", "Proactive recommendations ready!")
+    elif fn_name == "get_store_baselines":
+        return ("Calculating 30-day store benchmarks, peak hours, & sales velocity...", "Store baselines ready!")
+    elif fn_name == "check_supplier_price_trends":
+        return ("Checking historical supplier purchase prices & price hike trends...", "Price trends retrieved!")
+    elif fn_name == "get_customer_credit_ledger":
+        return ("Fetching customer Udhar/Khata credit ledger & overdue balances...", "Credit ledger ready!")
     elif fn_name in ("get_low_stock_products", "get_inventory_summary"):
         return ("Scanning inventory levels...", "Inventory data ready!")
     elif fn_name in ("get_sales_summary", "get_daily_sales_trend", "get_top_selling_products"):
@@ -725,14 +741,13 @@ async def voice_assistant_websocket(
             try:
                 while True:
                     msg = await gemini_ws.recv()
-                    LOGGER.info("gemini_frame_received", type=type(msg).__name__, preview=str(msg)[:500])
+                    LOGGER.debug("gemini_frame_received", type=type(msg).__name__)
                     decoded = _decode_gemini_message(msg)
 
                     if decoded is None:
                         continue
 
                     if "binary" in decoded:
-                        LOGGER.info("gemini_binary_frame_forwarded", size=len(decoded["binary"]))
                         await websocket.send_bytes(decoded["binary"])
                         continue
 
@@ -740,13 +755,11 @@ async def voice_assistant_websocket(
 
                     if "serverContent" in data:
                         server_content = data["serverContent"]
-                        LOGGER.info(
+                        LOGGER.debug(
                             "gemini_server_content_received",
-                            has_model_turn="modelTurn" in server_content,
-                            has_input_transcription="inputTranscription" in server_content,
-                            has_output_transcription="outputTranscription" in server_content,
                             turn_complete=server_content.get("turnComplete"),
                         )
+
 
                         # Handle Audio parts and text parts
                         if "outputTranscription" in server_content:
@@ -758,7 +771,8 @@ async def voice_assistant_websocket(
                                     "type": "ai_transcript",
                                     "text": out_text,
                                 })
-                        elif "modelTurn" in server_content:
+
+                        if "modelTurn" in server_content:
                             for part in server_content["modelTurn"].get("parts", []):
                                 if "text" in part and part["text"]:
                                     if not current_ai_speech or current_ai_speech[-1] != part["text"]:

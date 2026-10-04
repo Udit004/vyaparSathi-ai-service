@@ -178,6 +178,21 @@ async def parse_supplier_invoice_image(
             "catalog_matched": matched_product_id is not None
         })
 
+        # Record unit price in supplier_price_history collection for price intelligence
+        if unit_price > 0:
+            try:
+                from app.agent.service.purchases.price_history import record_supplier_price
+                effective_user_id = kwargs.get("user_id") or kwargs.get("configurable", {}).get("user_id") or "system"
+                await record_supplier_price(
+                    user_id=effective_user_id,
+                    store_id=store_id,
+                    supplier_name=seller_name,
+                    product_name=item_name,
+                    unit_cost_price=unit_price
+                )
+            except Exception as pe:
+                LOGGER.debug("record_supplier_price_ocr_failed", error=str(pe))
+
     # Auto-create Purchase Order in MongoDB if requested
     created_po = None
     if auto_create_purchase and matched_items:

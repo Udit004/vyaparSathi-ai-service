@@ -50,10 +50,12 @@ from app.agent.tools.products.history import get_product_history
 from app.agent.tools.stores.summary import get_store_summary
 from app.agent.tools.stores.comparison import compare_stores
 
-# Suppliers
-from app.agent.tools.suppliers.search import search_suppliers
-from app.agent.tools.suppliers.performance import get_supplier_performance
-from app.agent.tools.suppliers.pricing import get_supplier_pricing
+# Personalization & Proactive Intelligence
+from app.agent.tools.memory.merchant_memories import manage_merchant_memories
+from app.agent.tools.insights.proactive_insights import manage_proactive_insights
+from app.agent.tools.analytics.store_baselines import get_store_baselines
+from app.agent.tools.purchases.price_history import check_supplier_price_trends
+from app.agent.tools.customers.credit_ledger import get_customer_credit_ledger
 
 __all__ = [
     "ask_for_clarification",
@@ -96,4 +98,12 @@ __all__ = [
     "search_suppliers",
     "get_supplier_performance",
     "get_supplier_pricing",
+
+    # Personalization & Proactive Intelligence
+    "manage_merchant_memories",
+    "manage_proactive_insights",
+    "get_store_baselines",
+    "check_supplier_price_trends",
+    "get_customer_credit_ledger",
 ]
+

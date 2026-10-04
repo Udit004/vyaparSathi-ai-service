@@ -115,6 +115,13 @@ from app.agent.tools.products.write import tool_create_product, tool_update_prod
 # Code Execution / Python Interpreter
 from app.agent.tools.code_execution.python_interpreter import execute_python_code
 
+# Personalization & Proactive AI Tools
+from app.agent.tools.memory.merchant_memories import manage_merchant_memories
+from app.agent.tools.insights.proactive_insights import manage_proactive_insights
+from app.agent.tools.analytics.store_baselines import get_store_baselines
+from app.agent.tools.purchases.price_history import check_supplier_price_trends
+from app.agent.tools.customers.credit_ledger import get_customer_credit_ledger
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
@@ -234,6 +241,13 @@ VYAPAR_TOOLS = [
     tool_update_product,
     tool_adjust_stock,
     tool_delete_product,
+
+    # Personalization & Proactive Intelligence
+    manage_merchant_memories,
+    manage_proactive_insights,
+    get_store_baselines,
+    check_supplier_price_trends,
+    get_customer_credit_ledger,
 ]
 
 
