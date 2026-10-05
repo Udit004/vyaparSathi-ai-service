@@ -313,6 +313,25 @@ async def _stream_graph_events(
                         nav_payload = json.dumps({"route": route}, default=_json_default)
                         yield f"event: navigate\ndata: {nav_payload}\n\n"
 
+                # --- Handle Billing Tools ---
+                if name == "tool_add_billing_item":
+                    # We need the barcode from the result
+                    tool_result = data.get("output", {})
+                    tool_input = data.get("input", {})
+                    if isinstance(tool_result, dict) and tool_result.get("success"):
+                        add_payload = json.dumps({
+                            "barcode": tool_result.get("barcode"),
+                            "quantity": tool_input.get("quantity", 1)
+                        }, default=_json_default)
+                        yield f"event: billing_add\ndata: {add_payload}\n\n"
+
+                if name == "tool_generate_bill":
+                    tool_input = data.get("input", {})
+                    gen_payload = json.dumps({
+                        "paymentMethod": tool_input.get("payment_method", "cash")
+                    }, default=_json_default)
+                    yield f"event: billing_generate\ndata: {gen_payload}\n\n"
+
             # --- Memory query notifications ---
             elif kind == "on_chain_start" and name == "memory_query":
                 yield f"event: token\ndata: {json.dumps({'text': '\n_[Loading long-term memory...]_\n'})}\n\n"

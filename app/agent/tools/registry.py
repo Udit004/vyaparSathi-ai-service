@@ -125,6 +125,10 @@ from app.agent.tools.customers.credit_ledger import get_customer_credit_ledger
 # Navigation
 from app.agent.tools.navigation.navigate import tool_navigate_page
 
+# Billing & POS
+from app.agent.tools.billing.add_item import tool_add_billing_item
+from app.agent.tools.billing.generate_bill import tool_generate_bill
+
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
     ask_for_clarification,
@@ -254,6 +258,10 @@ VYAPAR_TOOLS = [
     
     # Navigation
     tool_navigate_page,
+    
+    # Billing
+    tool_add_billing_item,
+    tool_generate_bill,
 ]
 
 
