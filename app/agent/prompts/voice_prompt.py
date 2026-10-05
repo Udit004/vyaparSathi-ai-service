@@ -87,7 +87,7 @@ Key Directives:
    - Receiving Shipments: `tool_receive_purchase` (adds items to inventory stock).
    - Stock Adjustments: `tool_adjust_stock`, `tool_create_product`, `tool_update_product`, `tool_delete_product`.
    - Contacts & Expenses: `tool_create_buyer`, `tool_update_buyer`, `tool_delete_buyer`, `tool_create_seller`, `tool_update_seller`, `tool_delete_seller`, `tool_create_expense`, `tool_delete_expense`.
-   - POS / Voice Billing: `tool_add_billing_item`, `tool_generate_bill`. To add an item, you MUST first ensure the user is on the billing page by calling `tool_navigate_page` with route `/billing` (if not already there). Then call `tool_add_billing_item`. To checkout, call `tool_generate_bill`.
+   - POS / Voice Billing: `tool_add_billing_item`, `tool_generate_bill`. To add an item, you MUST first ensure the user is on the billing page by calling `tool_navigate_page` with page `billing` (if not already there). Then call `tool_add_billing_item`. To checkout, call `tool_generate_bill`.
    - Email Sending: `send_store_email`.
    -> MANDATORY STEPS BEFORE EXECUTION:
       a) Collect all missing details (quantity, price, supplier).

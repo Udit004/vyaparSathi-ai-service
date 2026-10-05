@@ -308,9 +308,9 @@ async def _stream_graph_events(
                 if name == "tool_navigate_page":
                     # For LangGraph, `data.get("input")` is the input dictionary passed to the tool
                     tool_input = data.get("input", {})
-                    route = tool_input.get("route")
-                    if route:
-                        nav_payload = json.dumps({"route": route}, default=_json_default)
+                    page = tool_input.get("page")
+                    if page:
+                        nav_payload = json.dumps({"page": page}, default=_json_default)
                         yield f"event: navigate\ndata: {nav_payload}\n\n"
 
                 # --- Handle Billing Tools ---

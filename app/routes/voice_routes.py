@@ -543,8 +543,8 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
     elif fn_name == "tool_update_product":
         return (f"Updating product {args.get('name', '')}...", "Product updated!")
     elif fn_name == "tool_navigate_page":
-        r = args.get("route", "")
-        return (f"Navigating to {r}...", "Navigation complete!")
+        p = args.get("page", "")
+        return (f"Navigating to {p}...", "Navigation complete!")
     elif fn_name == "tool_add_billing_item":
         return (f"Adding {args.get('quantity', 1)} x {args.get('product_name', 'item')} to POS...", "Added to bill!")
     elif fn_name == "tool_generate_bill":
