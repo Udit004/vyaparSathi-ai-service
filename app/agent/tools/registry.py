@@ -66,6 +66,7 @@ from app.agent.tools.subgraphs.invoke_briefing import invoke_morning_briefing
 from app.agent.tools.subgraphs.invoke_inventory_audit import invoke_deep_inventory_audit
 from app.agent.tools.subgraphs.invoke_restock_order import invoke_smart_restock_order
 from app.agent.tools.subgraphs.invoke_document_generation import invoke_document_generation
+from app.agent.tools.subgraphs.invoke_email_composer import invoke_email_composer
 
 # Memory & Owner Personalization (Redis + Pinecone + Merchant Scratchpad Diary)
 from app.agent.tools.memory.search import (
@@ -128,6 +129,15 @@ from app.agent.tools.navigation.navigate import tool_navigate_page
 # Billing & POS
 from app.agent.tools.billing.add_item import tool_add_billing_item
 from app.agent.tools.billing.generate_bill import tool_generate_bill
+
+# Automations & Scheduled Workflows (Express BullMQ)
+from app.agent.tools.automation.manage_automation import (
+    tool_create_automation,
+    tool_list_automations,
+    tool_toggle_automation,
+    tool_trigger_automation,
+    tool_delete_automation,
+)
 
 # LangGraph ToolNode will use this list
 VYAPAR_TOOLS = [
@@ -200,6 +210,7 @@ VYAPAR_TOOLS = [
     invoke_deep_inventory_audit,
     invoke_smart_restock_order,
     invoke_document_generation,
+    invoke_email_composer,
 
     # Memory & Owner Personalization (Redis + Pinecone)
     search_memory,
@@ -262,6 +273,13 @@ VYAPAR_TOOLS = [
     # Billing
     tool_add_billing_item,
     tool_generate_bill,
+
+    # Automations
+    tool_create_automation,
+    tool_list_automations,
+    tool_toggle_automation,
+    tool_trigger_automation,
+    tool_delete_automation,
 ]
 
 

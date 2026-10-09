@@ -47,24 +47,48 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.agent.context")
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_user(db, user_id: str) -> dict[str, Any]:
+async def _fetch_user(db, user_id: str, store_id: str = "") -> dict[str, Any]:
     """
     Fetch a compact user snapshot from the ``users`` collection.
-
-    Returns {} on any error (invalid ObjectId, document not found,
-    network issue) so the caller never needs to handle exceptions.
+    Supports MongoDB ObjectId, Firebase UID (firebaseUid / uid), email, and store owner references.
     """
-    try:
-        oid = ObjectId(user_id)
-    except (InvalidId, TypeError):
-        LOGGER.warning("context_node_invalid_user_id", user_id=user_id)
+    query_clauses: list[dict[str, Any]] = []
+
+    if user_id:
+        if ObjectId.is_valid(user_id):
+            query_clauses.append({"_id": ObjectId(user_id)})
+        query_clauses.append({"firebaseUid": user_id})
+        query_clauses.append({"uid": user_id})
+        query_clauses.append({"_id": user_id})
+        query_clauses.append({"email": user_id})
+
+    # If user not specified or not found, fallback to store's owner reference
+    if store_id and not query_clauses:
+        try:
+            store_doc = None
+            if ObjectId.is_valid(store_id):
+                store_doc = await db["stores"].find_one({"_id": ObjectId(store_id)}, {"owner": 1, "ownerFirebaseUid": 1})
+            if not store_doc:
+                store_doc = await db["stores"].find_one({"name": store_id}, {"owner": 1, "ownerFirebaseUid": 1})
+            if store_doc:
+                if store_doc.get("owner"):
+                    o_ref = store_doc["owner"]
+                    query_clauses.append({"_id": o_ref if isinstance(o_ref, ObjectId) else ObjectId(str(o_ref))})
+                if store_doc.get("ownerFirebaseUid"):
+                    query_clauses.append({"firebaseUid": store_doc["ownerFirebaseUid"]})
+        except Exception:
+            pass
+
+    if not query_clauses:
         return {}
 
     try:
         doc = await db["users"].find_one(
-            {"_id": oid},
+            {"$or": query_clauses},
             {
                 "name": 1,
+                "displayName": 1,
+                "fullName": 1,
                 "email": 1,
                 "preferences": 1,
                 "user_preferences": 1,
@@ -86,8 +110,10 @@ async def _fetch_user(db, user_id: str) -> dict[str, Any]:
         if doc.get("preferred_language"):
             prefs["preferred_language"] = doc.get("preferred_language")
 
+        user_name = doc.get("name") or doc.get("displayName") or doc.get("fullName") or ""
+
         return {
-            "name": doc.get("name", ""),
+            "name": user_name,
             "email": doc.get("email", ""),
             "preferences": prefs,
         }
@@ -191,7 +217,7 @@ async def context_node(state: VyaparAgentState) -> Dict[str, Any]:
     try:
         db = get_database()
         user_ctx, store_ctx = await asyncio.gather(
-            _fetch_user(db, user_id),
+            _fetch_user(db, user_id, store_id),
             _fetch_store(db, store_id),
         )
     except Exception as exc:  # noqa: BLE001

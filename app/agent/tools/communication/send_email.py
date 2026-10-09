@@ -297,12 +297,38 @@ async def send_store_email(
                 if raw:
                     notes = json.loads(raw)
                     for n in notes:
-                        if n.get("category") in ("purchase_order_draft", "purchase_order") and n.get("draft_data", {}).get("email_html"):
+                        if n.get("category") in ("purchase_order_draft", "purchase_order", "email_draft") and n.get("draft_data", {}).get("email_html"):
                             html_content = n["draft_data"]["email_html"]
                             text_content = n.get("content")
                             break
         except Exception as sc_err:
             LOGGER.debug("scratchpad_body_lookup_err", error=str(sc_err))
+
+    # Auto-generate rich HTML via Email Composer Subgraph if HTML is missing or simple text
+    is_rich_html = html_content and ("<table" in html_content.lower() or "box-shadow" in html_content.lower() or "<!doctype html" in html_content.lower())
+    if not is_rich_html:
+        try:
+            from app.agent.subgraphs.email_composer.graph import email_composer_graph
+            composer_prompt = text_content or html_content or subject
+            LOGGER.info("auto_composing_html_email_via_subgraph", prompt=composer_prompt[:80], recipient=resolved_name)
+            composer_input = {
+                "request_prompt": f"Subject: {subject}\nRecipient: {resolved_name} ({target_email})\nContent:\n{composer_prompt}",
+                "recipient_name": resolved_name or recipient_name,
+                "recipient_email": target_email,
+                "language": language or "English",
+                "store_id": store_id,
+                "user_id": user_id,
+            }
+            comp_res = await email_composer_graph.ainvoke(composer_input)
+            email_out = comp_res.get("email_output", {})
+            if email_out.get("html_content"):
+                html_content = email_out["html_content"]
+                if not subject or subject == "Official Message from Vyapar Sakha" or subject == "Today's Sales Summary":
+                    subject = email_out.get("subject", subject)
+                if email_out.get("plain_text"):
+                    text_content = email_out["plain_text"]
+        except Exception as comp_err:
+            LOGGER.warning("send_email_auto_composer_failed", error=str(comp_err))
 
     html_content = html_content or (f"<p>{text_content.replace(chr(10), '<br/>')}</p>" if text_content else f"<p>{subject}</p>")
     text_content = text_content or (html_content or subject)
@@ -315,9 +341,11 @@ async def send_store_email(
         user_id=user_id,
     )
 
-    # If owner details not already present in the email body, append a clean owner identity footer
+    # If owner details not already present in the email body, append a clean owner identity footer (for plain text / simple snippet HTML only)
+    is_complete_html_doc = "<html" in html_content.lower() or "<!doctype html" in html_content.lower()
     owner_info_already_in_body = bool(
-        owner_email and (owner_email.lower() in html_content.lower() or owner_email.lower() in text_content.lower())
+        is_complete_html_doc
+        or (owner_email and (owner_email.lower() in html_content.lower() or owner_email.lower() in text_content.lower()))
     )
 
     if not owner_info_already_in_body:

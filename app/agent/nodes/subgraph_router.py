@@ -44,6 +44,7 @@ from app.agent.subgraphs.deep_inventory.graph import deep_inventory_graph
 from app.agent.subgraphs.smart_restock.graph import smart_restock_graph
 from app.agent.subgraphs.web_research.graph import web_research_graph
 from app.agent.subgraphs.document_generation.graph import document_generation_graph
+from app.agent.subgraphs.email_composer.graph import email_composer_graph
 
 from app.agent.state import make_tool_result
 
@@ -72,6 +73,10 @@ _SUBGRAPH_REGISTRY: dict[str, dict[str, Any]] = {
         "graph": document_generation_graph,
         "output_key": "file_metadata",
     },
+    "email_composer": {
+        "graph": email_composer_graph,
+        "output_key": "email_output",
+    },
 }
 
 _SUBGRAPH_TOOL_NAMES = {
@@ -79,6 +84,7 @@ _SUBGRAPH_TOOL_NAMES = {
     "invoke_deep_inventory_audit",
     "invoke_smart_restock_order",
     "invoke_document_generation",
+    "invoke_email_composer",
     "web_research",
 }
 

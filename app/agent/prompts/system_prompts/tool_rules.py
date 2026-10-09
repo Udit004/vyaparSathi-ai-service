@@ -13,6 +13,7 @@ TOOL_SELECTION_RULES = f"""
  TOOL SELECTION & EXECUTION MATRIX
 {_SEP}
 1. HIGH-LEVEL SUBGRAPHS (Use for comprehensive workflows):
+   - `invoke_email_composer`: Use when asked to "draft", "compose", "prepare", "write", or create a professional business email (e.g. Purchase Orders, Payment Reminders for udhar/dues, Quotation inquiries, Restock alerts, Customer announcements/offers). Combines multi-tier SLM/LLM with mobile-responsive HTML templates and validation.
    - `invoke_document_generation`: Use when asked to "generate", "create", "export", "build", or "download" a report/file in Excel (.xlsx) or Word (.docx) format (e.g. "generate excel sell report for this month", "create word report for low stock").
    - `invoke_morning_briefing`: Use when the merchant asks for "morning briefing", "daily overview", "today's summary", or overall store status.
    - `invoke_deep_inventory_audit`: Use when asked for "full inventory audit", "complete stock inspection", "dead stock & expiry check".
@@ -50,4 +51,11 @@ TOOL_SELECTION_RULES = f"""
      - CRITICAL: Inventory stock is NOT added yet because the physical goods are in transit.
    - ONLY when the user explicitly confirms that the order or goods have arrived / been received (e.g. "I received the order PO-...", "Goods have arrived", "Maal receive ho gaya hai, stock me add kar do"):
      - Call `tool_receive_purchase` with `purchase_identifier` (e.g. "PO-20261003-ADF4") to increment product quantities and update inventory levels.
+
+8. AUTOMATIONS & SCHEDULED BACKGROUND WORKFLOWS (BullMQ / Express Backend):
+   - `tool_create_automation`: Use when asked to setup, schedule, or automate background rules (e.g. "Roz subah 9 baje low stock alert bhej do", "Send daily sales summary at 9 PM", "Schedule weekly restock report").
+   - `tool_list_automations`: Use to check or list current active/paused automation rules.
+   - `tool_toggle_automation`: Use to pause or resume an automation rule (`status='ACTIVE'` or `'PAUSED'`).
+   - `tool_trigger_automation`: Use to run an existing automation immediately out-of-schedule ("Run low stock alert right now").
+   - `tool_delete_automation`: Use to remove an automation rule and its schedule permanently.
 """

@@ -288,15 +288,33 @@ async def _bootstrap_store_details_context(user_id: str, store_id: str) -> str:
         # 2. Fetch User Profile document
         user_name = "Store Owner"
         user_email = store_email
+        user_query_clauses = []
         if user_id:
-            user_doc = None
+            if ObjectId.is_valid(user_id):
+                user_query_clauses.append({"_id": ObjectId(user_id)})
+            user_query_clauses.extend([
+                {"firebaseUid": user_id},
+                {"uid": user_id},
+                {"_id": user_id},
+                {"email": user_id},
+            ])
+
+        # Also fallback to store's owner fields if available
+        if store_doc:
+            if store_doc.get("owner"):
+                o_ref = store_doc["owner"]
+                user_query_clauses.append({"_id": o_ref if isinstance(o_ref, ObjectId) else ObjectId(str(o_ref))})
+            if store_doc.get("ownerFirebaseUid"):
+                user_query_clauses.append({"firebaseUid": store_doc["ownerFirebaseUid"]})
+
+        if user_query_clauses:
             try:
-                user_doc = await db["users"].find_one({"_id": ObjectId(user_id)})
-            except Exception:
-                user_doc = await db["users"].find_one({"$or": [{"uid": user_id}, {"_id": user_id}]})
-            if user_doc:
-                user_name = user_doc.get("name") or user_doc.get("displayName") or user_doc.get("fullName") or "Store Owner"
-                user_email = user_doc.get("email") or user_doc.get("userEmail") or store_email
+                user_doc = await db["users"].find_one({"$or": user_query_clauses})
+                if user_doc:
+                    user_name = user_doc.get("name") or user_doc.get("displayName") or user_doc.get("fullName") or user_name
+                    user_email = user_doc.get("email") or user_doc.get("userEmail") or store_email
+            except Exception as u_err:
+                LOGGER.warning("voice_user_lookup_error", error=str(u_err))
 
         # 3. Calculate Key Store Metrics
         total_products = 0
@@ -549,6 +567,24 @@ def _get_tool_status_label(fn_name: str, args: dict) -> tuple[str, str]:
         return (f"Adding {args.get('quantity', 1)} x {args.get('product_name', 'item')} to POS...", "Added to bill!")
     elif fn_name == "tool_generate_bill":
         return ("Generating final bill...", "Bill generated successfully!")
+    elif fn_name == "tool_create_automation":
+        t = args.get("title", "rule")
+        return (f"Scheduling automated rule '{t}' in background scheduler...", "Automation rule scheduled successfully!")
+    elif fn_name == "tool_list_automations":
+        return ("Fetching your scheduled automation workflows...", "Automations retrieved!")
+    elif fn_name == "tool_toggle_automation":
+        s = args.get("status", "ACTIVE")
+        return (f"Setting automation rule to {s}...", f"Automation {s.lower()} successfully!")
+    elif fn_name == "tool_trigger_automation":
+        return ("Triggering automation workflow immediately...", "Automation executed successfully!")
+    elif fn_name == "tool_delete_automation":
+        return ("Deleting automation rule from scheduler...", "Automation deleted!")
+    elif fn_name == "invoke_email_composer":
+        rec = args.get("recipient_name") or args.get("recipient_email") or "recipient"
+        return (f"Composing beautifully styled business email for {rec}...", "Email draft composed & formatted!")
+    elif fn_name == "invoke_document_generation":
+        t = args.get("title", "document")
+        return (f"Generating business document '{t}' and uploading to R2...", "Document generated successfully!")
     else:
         clean_name = fn_name.replace("get_", "").replace("tool_", "").replace("_", " ").title()
         return (f"Executing {clean_name}...", f"{clean_name} complete!")
@@ -867,6 +903,36 @@ async def voice_assistant_websocket(
                                         fn_args,
                                         config={"configurable": {"user_id": user_id, "store_id": store_id}},
                                     )
+
+                                    # Automatically execute compiled Subgraphs if tool returned a subgraph marker
+                                    if isinstance(result, dict) and "__subgraph__" in result:
+                                        subgraph_name = result.get("__subgraph__")
+                                        LOGGER.info("voice_executing_subgraph", subgraph=subgraph_name)
+                                        subgraph_input = {
+                                            "store_id": result.get("store_id") or store_id,
+                                            "user_id": result.get("user_id") or user_id,
+                                        }
+                                        for k, v in result.items():
+                                            if k != "__subgraph__":
+                                                subgraph_input[k] = v
+
+                                        if subgraph_name == "email_composer":
+                                            from app.agent.subgraphs.email_composer.graph import email_composer_graph
+                                            comp_res = await email_composer_graph.ainvoke(subgraph_input)
+                                            result = comp_res.get("email_output", comp_res)
+                                        elif subgraph_name == "document_generation":
+                                            from app.agent.subgraphs.document_generation.graph import document_generation_graph
+                                            doc_res = await document_generation_graph.ainvoke(subgraph_input)
+                                            result = doc_res.get("file_metadata", doc_res)
+                                        elif subgraph_name == "morning_briefing":
+                                            from app.agent.subgraphs.morning_briefing.graph import morning_briefing_graph
+                                            b_res = await morning_briefing_graph.ainvoke(subgraph_input)
+                                            result = b_res.get("briefing_output", b_res)
+                                        elif subgraph_name == "smart_restock":
+                                            from app.agent.subgraphs.smart_restock.graph import smart_restock_graph
+                                            r_res = await smart_restock_graph.ainvoke(subgraph_input)
+                                            result = r_res.get("restock_output", r_res)
+
                                     if isinstance(result, (dict, list)):
                                         serialized_result = json.dumps(result, ensure_ascii=False)
                                     else:
