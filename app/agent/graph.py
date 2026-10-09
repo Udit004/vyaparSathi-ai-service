@@ -59,7 +59,6 @@ from app.agent.nodes.think_node import think_node
 from app.agent.nodes.tool_node import tool_node
 from app.agent.nodes.observe_node import observe_node
 from app.agent.nodes.memory_query import memory_query_node
-from app.agent.nodes.grader_node import grader_node
 from app.agent.nodes.intent_node import intent_node
 from app.agent.nodes.interrupt_node import interrupt_node
 from app.agent.nodes.context_node import context_node
@@ -92,9 +91,13 @@ def _route_after_intent(state: VyaparAgentState) -> str:
     - greeting intent → END (intent_node already set final_answer)
     - everything else → memory_query
     """
-    if state.get("intent") == "greeting":
+    if state.get("goal_status") == "complete":
         return "__end__"
-    return "memory_query"
+    if state.get("memory_query_needed", False) and state.get("intent") in {"memory", "mixed"}:
+        return "memory_query"
+    if state.get("requires_planning", False) and not state.get("plan"):
+        return "planner"
+    return "think"
 
 def _route_after_grader(state: VyaparAgentState) -> str:
     """
@@ -184,7 +187,7 @@ def build_graph(checkpointer=None):
     # --------------------------------------------------------------
 
     workflow.add_node("context", context_node)
-    workflow.add_node("grader", grader_node)
+    # workflow.add_node("grader", grader_node)
     workflow.add_node("intent", intent_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("interrupt", interrupt_node)
@@ -205,7 +208,7 @@ def build_graph(checkpointer=None):
     workflow.set_entry_point("context")
 
     # context → grader (always; context_node never blocks the graph)
-    workflow.add_edge("context", "grader")
+    workflow.add_edge("context", "intent")
 
     # --------------------------------------------------------------
     # Conditional edges from grader
@@ -214,23 +217,25 @@ def build_graph(checkpointer=None):
     # --------------------------------------------------------------
 
     workflow.add_conditional_edges(
-        "grader",
+        "intent",
         _route_after_grader,
         {
+            "think": "think",
             "__end__": END,
             "intent": "intent",
         },
     )
 
     # intent -> greeting short-circuit or memory_query
-    workflow.add_conditional_edges(
-        "intent",
-        _route_after_intent,
-        {
-            "__end__": END,
-            "memory_query": "memory_query",
-        },
-    )
+    # workflow.add_conditional_edges(
+    #     "intent",
+    #     _route_after_intent,
+    #     {
+    #         "__end__": END,
+    #         "think": "think",
+    #         "memory_query": "memory_query",
+    #     },
+    # )
 
     # memory_query -> planner or think
     workflow.add_conditional_edges(

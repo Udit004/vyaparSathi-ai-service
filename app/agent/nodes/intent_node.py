@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
+import random
 from typing import Any, Dict
 
 import structlog
 from pydantic import BaseModel, Field
 
-import random
-
 from app.agent.prompts.intent_prompt import INTENT_CLASSIFIER_INSTRUCTION
 from app.agent.state import VyaparAgentState
 from app.agent.utils import latest_human_prompt
+from app.lib.grader import _SEVERE_HARM_KEYWORDS
 from app.lib.llm import get_small_llm
 from langchain_core.messages import AIMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.intent")
 
-_VALID_INTENTS = {"live_data", "memory", "conversation_recap", "mixed", "general", "greeting"}
+_VALID_INTENTS = {"live_data", "memory", "conversation_recap", "mixed", "general", "greeting", "off_topic", "harmful"}
+_MEMORY_REQUIRED_INTENTS = {"memory", "mixed"}
+
+_REFUSAL_HARMFUL = (
+    "I'm sorry, but I can't help with that request. "
+    "Vyapar Sakha is designed to assist with retail store operations "
+    "such as inventory, sales, forecasting, and restocking. "
+    "Please let me know if there's something else I can help you with."
+)
+
+_REFUSAL_OFF_TOPIC = (
+    "That's outside what Vyapar Sakha handles. I can help with your "
+    "store's inventory, sales, forecasting, restocking, and business "
+    "insights — ask me about any of those."
+)
 
 _LIVE_TERMS = (
     "inventory", "stock", "stockout", "out of stock", "sales", "selling",
@@ -104,7 +119,7 @@ def _build_greeting_reply(state: VyaparAgentState, prompt: str) -> str:
 
 
 class IntentClassification(BaseModel):
-    intent: str = Field(description="The primary intent label: live_data, memory, conversation_recap, mixed, greeting, or general")
+    intent: str = Field(description="The primary intent label: harmful, off_topic, live_data, memory, conversation_recap, mixed, greeting, or general")
     reason: str = Field(description="Short reason for the classification")
     requires_planning: bool = Field(description="True if the request is complex and needs step-by-step planning or strategy")
 
@@ -116,6 +131,9 @@ def _requires_planning(prompt: str) -> bool:
 
 def _deterministic_intent(prompt: str) -> str | None:
     lowered = (prompt or "").lower().strip()
+    if any(kw in lowered for kw in _SEVERE_HARM_KEYWORDS):
+        return "harmful"
+
     has_dues_request = (
         ("buyer" in lowered or "buyers" in lowered)
         and ("seller" in lowered or "sellers" in lowered)
@@ -155,7 +173,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
             intent=existing_intent,
             reason=existing_reason,
         )
-        needs_memory = existing_intent in {"memory", "mixed"}
+        needs_memory = existing_intent in _MEMORY_REQUIRED_INTENTS
         return {
             "user_prompt": prompt,
             "intent": existing_intent,
@@ -163,6 +181,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
             "memory_query_needed": needs_memory,
             "user_memory_loaded": not needs_memory,
             "store_memory_loaded": not needs_memory,
+            "multi_store_memory_loaded": not needs_memory,
             "requires_planning": requires_planning,
         }
 
@@ -189,12 +208,13 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
                         history_context = "Recent Conversation (last 3 turns):\n" + "\n".join(history_lines) + "\n\n"
                         
                 classifier = llm.with_structured_output(IntentClassification)
-                response = await classifier.ainvoke(
-                    [
-                        {"role": "system", "content": INTENT_CLASSIFIER_INSTRUCTION},
-                        {"role": "user", "content": f"{history_context}Latest User Request: {prompt}"}
-                    ],
-                    config={"tags": ["hide_stream"]}
+                messages = [
+                    {"role": "system", "content": INTENT_CLASSIFIER_INSTRUCTION},
+                    {"role": "user", "content": f"{history_context}Latest User Request: {prompt}"},
+                ]
+                response = await asyncio.wait_for(
+                    classifier.ainvoke(messages, config={"tags": ["hide_stream"]}),
+                    timeout=6.0,
                 )
                 
                 if response.intent in _VALID_INTENTS:
@@ -204,6 +224,10 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
                 else:
                     intent = "general"
                     reason = "invalid intent from LLM"
+            except asyncio.TimeoutError:
+                LOGGER.warning("intent_classification_timeout", error="LLM timeout after 6s")
+                intent = "general"
+                reason = "LLM classification timeout"
             except Exception as e:
                 LOGGER.warning("intent_classification_failed", error=str(e))
                 intent = "general"
@@ -214,7 +238,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
     # live_data / general / conversation_recap queries don't need historical memory;
     # the actual data comes from live tools. This is the primary knob that prevents
     # the 25-second memory_query delay for ~80% of requests.
-    needs_memory = intent in {"memory", "mixed"}
+    needs_memory = intent in _MEMORY_REQUIRED_INTENTS
 
     LOGGER.info(
         "intent_classified",
@@ -238,6 +262,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
             "memory_query_needed": False,
             "user_memory_loaded": True,
             "store_memory_loaded": True,
+            "multi_store_memory_loaded": True,
             "requires_planning": False,
             "goal_status": "complete",
             "goal": "greet user",
@@ -248,6 +273,28 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         }
     # ── End greeting fast-path ─────────────────────────────────────────────
 
+    if intent in {"harmful", "off_topic"}:
+        reply = _REFUSAL_HARMFUL if intent == "harmful" else _REFUSAL_OFF_TOPIC
+        LOGGER.info("intent_refusal_fast_path", intent=intent, reason=reason)
+        return {
+            "user_prompt": prompt,
+            "intent": intent,
+            "intent_reason": reason,
+            "memory_query_needed": False,
+            "user_memory_loaded": True,
+            "store_memory_loaded": True,
+            "multi_store_memory_loaded": True,
+            "requires_planning": False,
+            "grader_denied": True,
+            "grader_reason": reason,
+            "goal_status": "complete",
+            "goal": f"refuse {intent} request",
+            "final_answer": reply,
+            "should_persist_memory": False,
+            "messages": [AIMessage(content=reply)],
+            "response_metadata": {"intent": intent, "fast_path": True, "grader_verdict": intent},
+        }
+
     return {
         "user_prompt": prompt,
         "intent": intent,
@@ -255,5 +302,6 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
         "memory_query_needed": needs_memory,
         "user_memory_loaded": not needs_memory,
         "store_memory_loaded": not needs_memory,
+        "multi_store_memory_loaded": not needs_memory,
         "requires_planning": requires_planning,
     }

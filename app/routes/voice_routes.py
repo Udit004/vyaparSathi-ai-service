@@ -837,12 +837,18 @@ async def voice_assistant_websocket(
 
                             start_label, complete_label = _get_tool_status_label(fn_name, fn_args)
                             # Notify client that tool execution has started
-                            await websocket.send_json({
-                                "type": "tool_start",
-                                "tool": fn_name,
-                                "label": start_label,
-                            })
+                            try:
+                                await websocket.send_json({
+                                    "type": "tool_start",
+                                    "tool": fn_name,
+                                    "label": start_label,
+                                    "args": fn_args,
+                                })
+                            except Exception as ws_err:
+                                LOGGER.warning("voice_ws_tool_start_send_failed", error=str(ws_err))
 
+                            result = None
+                            serialized_result = ""
                             try:
                                 tool = get_tool_by_name(fn_name)
                                 if tool:
@@ -867,36 +873,46 @@ async def voice_assistant_websocket(
                                         serialized_result = str(result)
                                 else:
                                     serialized_result = f"Tool '{fn_name}' not found."
+                                    result = {"error": serialized_result}
                             except Exception as exc:
                                 LOGGER.error("voice_tool_error", tool=fn_name, error=str(exc), exc_info=True)
                                 serialized_result = f"Error executing {fn_name}: {exc}"
+                                result = {"error": serialized_result}
 
                             # Notify client that tool execution is complete
-                            await websocket.send_json({
-                                "type": "tool_complete",
-                                "tool": fn_name,
-                                "label": complete_label,
-                                "args": fn_args,
-                                "result": result,
-                            })
+                            try:
+                                await websocket.send_json({
+                                    "type": "tool_complete",
+                                    "tool": fn_name,
+                                    "label": complete_label,
+                                    "args": fn_args,
+                                    "result": result,
+                                })
+                            except Exception as ws_err:
+                                LOGGER.warning("voice_ws_tool_complete_send_failed", error=str(ws_err))
+
+                            res_payload = result if isinstance(result, dict) else {"output": serialized_result}
 
                             return {
                                 "id": fn_id,
                                 "name": fn_name,
-                                "response": {"output": serialized_result},
+                                "response": res_payload,
                             }
 
                         if fn_calls:
-                            tool_responses = await asyncio.gather(
-                                *[_execute_single_tool(fn) for fn in fn_calls]
-                            )
-                            # Send all tool results back to Gemini
-                            response_msg = {
-                                "toolResponse": {
-                                    "functionResponses": list(tool_responses)
+                            try:
+                                tool_responses = await asyncio.gather(
+                                    *[_execute_single_tool(fn) for fn in fn_calls]
+                                )
+                                # Send all tool results back to Gemini
+                                response_msg = {
+                                    "toolResponse": {
+                                        "functionResponses": list(tool_responses)
+                                    }
                                 }
-                            }
-                            await gemini_ws.send(json.dumps(response_msg))
+                                await gemini_ws.send(json.dumps(response_msg))
+                            except Exception as tool_batch_err:
+                                LOGGER.error("voice_tool_batch_error", error=str(tool_batch_err), exc_info=True)
 
             except websockets.exceptions.ConnectionClosed:
                 LOGGER.info("gemini_disconnected")
@@ -948,7 +964,7 @@ async def voice_assistant_websocket(
 
         if session_transcript:
             LOGGER.info("voice_session_ended_persisting_history", message_count=len(session_transcript))
-            try:
-                await _persist_voice_session_history_and_memory(user_id, store_id, list(session_transcript))
-            except Exception as exc:
-                LOGGER.error("voice_session_persistence_error", error=str(exc), exc_info=True)
+            # Run persistence in the background so it doesn't block the socket from fully closing
+            asyncio.create_task(
+                _persist_voice_session_history_and_memory(user_id, store_id, list(session_transcript))
+            )
