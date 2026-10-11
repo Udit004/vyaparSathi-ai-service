@@ -1,0 +1,116 @@
+{
+  "metrics": {
+    "num_series": 120,
+    "latency_total_ms": 213.53,
+    "latency_per_sku_ms": 1.779,
+    "overall_wape_percent": 44.7,
+    "overall_smape_percent": 57.74,
+    "trend_direction_accuracy_percent": 55.83,
+    "festival_slice_wape_percent": 42.16,
+    "regular_slice_wape_percent": 45.6,
+    "regular_sku_wape_percent": 29.52,
+    "intermittent_sku_wape_percent": 277.66
+  },
+  "sample_results": [
+    {
+      "store_id": "store_1",
+      "product_id": "product_001",
+      "predicted_7d": 252.45,
+      "actual_7d": 27.43,
+      "err": 225.02,
+      "source": "model",
+      "is_festival": true,
+      "is_intermittent": true
+    },
+    {
+      "store_id": "store_2",
+      "product_id": "product_002",
+      "predicted_7d": 133.95,
+      "actual_7d": 95.05,
+      "err": 38.9,
+      "source": "model",
+      "is_festival": true,
+      "is_intermittent": true
+    },
+    {
+      "store_id": "store_3",
+      "product_id": "product_003",
+      "predicted_7d": 119.32,
+      "actual_7d": 58.49,
+      "err": 60.83,
+      "source": "model",
+      "is_festival": true,
+      "is_intermittent": true
+    },
+    {
+      "store_id": "store_4",
+      "product_id": "product_004",
+      "predicted_7d": 252.23,
+      "actual_7d": 248.63,
+      "err": 3.6,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": false
+    },
+    {
+      "store_id": "store_5",
+      "product_id": "product_005",
+      "predicted_7d": 263.28,
+      "actual_7d": 421.92,
+      "err": 158.64,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": false
+    },
+    {
+      "store_id": "store_6",
+      "product_id": "product_006",
+      "predicted_7d": 232.94,
+      "actual_7d": 129.51,
+      "err": 103.43,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": false
+    },
+    {
+      "store_id": "store_7",
+      "product_id": "product_007",
+      "predicted_7d": 219.44,
+      "actual_7d": 30.75,
+      "err": 188.69,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": true
+    },
+    {
+      "store_id": "store_8",
+      "product_id": "product_008",
+      "predicted_7d": 238.12,
+      "actual_7d": 515.88,
+      "err": 277.76,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": false
+    },
+    {
+      "store_id": "store_1",
+      "product_id": "product_009",
+      "predicted_7d": 231.73,
+      "actual_7d": 29.99,
+      "err": 201.74,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": true
+    },
+    {
+      "store_id": "store_2",
+      "product_id": "product_010",
+      "predicted_7d": 283.18,
+      "actual_7d": 502.88,
+      "err": 219.7,
+      "source": "model",
+      "is_festival": false,
+      "is_intermittent": false
+    }
+  ]
+}

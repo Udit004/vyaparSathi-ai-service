@@ -1,1 +1,18 @@
-["store", "item", "day_of_week", "month", "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "rolling_mean_7", "rolling_mean_14", "rolling_std_7"]
+[
+  "store",
+  "item",
+  "day_of_week",
+  "day_of_month",
+  "month",
+  "is_weekend",
+  "is_payday_window",
+  "is_festival_window",
+  "lag_1",
+  "lag_2",
+  "lag_3",
+  "lag_7",
+  "lag_14",
+  "rolling_mean_7",
+  "rolling_mean_14",
+  "rolling_std_7"
+]

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import json
 import hashlib
-import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 from threading import Lock
 from typing import Any
 
+import numpy as np
 import structlog
 
 from app.schemas.forecast import ForecastRequest, ForecastResponse, ForecastResult
 from app.utils.forecasting import confidence_bucket, forecast_series
+from app.utils.indian_calendar import get_calendar_features
 
 try:
     from catboost import CatBoostRegressor
@@ -31,6 +32,8 @@ _FEATURE_COLUMNS: list[str] | None = None
 _MODEL_LOAD_ERROR: Exception | None = None
 _STORE_ENCODER_MAP: dict[str, float] | None = None
 _ITEM_ENCODER_MAP: dict[str, float] | None = None
+_IS_NATIVE_CAT_MODEL: bool = False
+_IS_MULTI_OUTPUT_MODEL: bool = False
 _MODEL_LOCK = Lock()
 LOGGER = structlog.get_logger("vyaparsathi.ai.forecast")
 
@@ -43,8 +46,8 @@ def _safe_float(value: Any) -> float:
 
 
 def _extract_prediction_scalar(raw_prediction: Any) -> float:
-    if isinstance(raw_prediction, (list, tuple)):
-        if not raw_prediction:
+    if isinstance(raw_prediction, (list, tuple, np.ndarray)):
+        if len(raw_prediction) == 0:
             return 0.0
         return _safe_float(raw_prediction[0])
 
@@ -53,14 +56,6 @@ def _extract_prediction_scalar(raw_prediction: Any) -> float:
             return _safe_float(raw_prediction.item())
         except Exception:
             pass
-
-    if hasattr(raw_prediction, "__len__") and hasattr(raw_prediction, "__getitem__"):
-        try:
-            if len(raw_prediction) == 0:
-                return 0.0
-            return _safe_float(raw_prediction[0])
-        except Exception:
-            return _safe_float(raw_prediction)
 
     return _safe_float(raw_prediction)
 
@@ -118,6 +113,7 @@ def _series_anchor_date(values: list) -> date:
 def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
     global _MODEL, _FEATURE_COLUMNS, _MODEL_LOAD_ERROR
     global _STORE_ENCODER_MAP, _ITEM_ENCODER_MAP
+    global _IS_NATIVE_CAT_MODEL, _IS_MULTI_OUTPUT_MODEL
 
     if _MODEL_LOAD_ERROR is not None:
         LOGGER.warning(
@@ -127,12 +123,11 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
         return None, None
 
     if _MODEL is not None and _FEATURE_COLUMNS is not None:
-        LOGGER.info("forecast_model_cached")
+        LOGGER.debug("forecast_model_cached")
         return _MODEL, _FEATURE_COLUMNS
 
     with _MODEL_LOCK:
         if _MODEL is not None and _FEATURE_COLUMNS is not None:
-            LOGGER.info("forecast_model_cached_after_lock")
             return _MODEL, _FEATURE_COLUMNS
 
         try:
@@ -140,8 +135,6 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
                 "loading_forecast_artifacts",
                 model_path=str(MODEL_PATH),
                 feature_columns_path=str(FEATURE_COLUMNS_PATH),
-                store_encoder_path=str(STORE_ENCODER_PATH),
-                item_encoder_path=str(ITEM_ENCODER_PATH),
             )
             if CatBoostRegressor is None:
                 raise RuntimeError("catboost package is not installed")
@@ -163,15 +156,25 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
             model = CatBoostRegressor()
             model.load_model(str(MODEL_PATH))
 
+            # Detect if model natively expects categorical strings
+            cat_indices = model.get_cat_feature_indices() if hasattr(model, "get_cat_feature_indices") else []
+            _IS_NATIVE_CAT_MODEL = len(cat_indices) > 0
+
+            # Detect loss function / multi-output support
+            model_params = model.get_all_params() if hasattr(model, "get_all_params") else {}
+            loss_fn = str(model_params.get("loss_function", "")).lower()
+            _IS_MULTI_OUTPUT_MODEL = "multirmse" in loss_fn
+
             _FEATURE_COLUMNS = loaded_columns
             _MODEL = model
             _STORE_ENCODER_MAP = _load_encoder_map(STORE_ENCODER_PATH)
             _ITEM_ENCODER_MAP = _load_encoder_map(ITEM_ENCODER_PATH)
+
             LOGGER.info(
                 "forecast_model_loaded",
                 feature_columns_count=len(_FEATURE_COLUMNS),
-                store_encoder=bool(_STORE_ENCODER_MAP),
-                item_encoder=bool(_ITEM_ENCODER_MAP),
+                is_native_cat=_IS_NATIVE_CAT_MODEL,
+                is_multi_output=_IS_MULTI_OUTPUT_MODEL,
             )
         except Exception as exc:
             _MODEL_LOAD_ERROR = exc
@@ -183,19 +186,28 @@ def _lazy_load_artifacts() -> tuple[Any | None, list[str] | None]:
 
 def _build_feature_map(
     *,
-    store_value: float,
-    item_value: float,
+    store_id: str,
+    item_id: str,
     target_date: date,
     history: list[float],
 ) -> dict[str, Any]:
     last_7 = history[-7:] if history else []
     last_14 = history[-14:] if history else []
+    cal = get_calendar_features(target_date)
+
+    # Use native string if native cat model, else fallback to numeric encoding
+    store_val: Any = str(store_id) if _IS_NATIVE_CAT_MODEL else _encode_with_map(store_id, _STORE_ENCODER_MAP)
+    item_val: Any = str(item_id) if _IS_NATIVE_CAT_MODEL else _encode_with_map(item_id, _ITEM_ENCODER_MAP)
 
     feature_map: dict[str, Any] = {
-        "store": store_value,
-        "item": item_value,
-        "day_of_week": target_date.weekday(),
-        "month": target_date.month,
+        "store": store_val,
+        "item": item_val,
+        "day_of_week": cal["day_of_week"],
+        "day_of_month": cal["day_of_month"],
+        "month": cal["month"],
+        "is_weekend": cal["is_weekend"],
+        "is_payday_window": cal["is_payday_window"],
+        "is_festival_window": cal["is_festival_window"],
         "lag_1": history[-1] if len(history) >= 1 else 0.0,
         "lag_2": history[-2] if len(history) >= 2 else 0.0,
         "lag_3": history[-3] if len(history) >= 3 else 0.0,
@@ -220,25 +232,58 @@ def _predict_with_model(
     anchor_date: date,
 ) -> tuple[float, float, float]:
     history = history_values[:] if history_values else [0.0]
-    horizon_predictions: list[float] = []
-    encoded_store = _encode_with_map(store_id, _STORE_ENCODER_MAP)
-    encoded_item = _encode_with_map(item_id, _ITEM_ENCODER_MAP)
 
-    for step in range(1, horizon_days + 1):
-        target = anchor_date + timedelta(days=step)
+    # --- DIRECT HORIZON FORECASTING ---
+    # In direct multi-horizon mode, we predict all days simultaneously from anchor features
+    if _IS_MULTI_OUTPUT_MODEL:
+        target_date = anchor_date + timedelta(days=1)
         feature_map = _build_feature_map(
-            store_value=encoded_store,
-            item_value=encoded_item,
-            target_date=target,
+            store_id=store_id,
+            item_id=item_id,
+            target_date=target_date,
             history=history,
         )
 
         row = [feature_map.get(column, 0.0) for column in feature_columns]
         raw_pred = model.predict([row])
-        prediction = max(0.0, _extract_prediction_scalar(raw_pred))
 
-        horizon_predictions.append(prediction)
-        history.append(prediction)
+        daily_preds: list[float] = []
+        if isinstance(raw_pred, (list, tuple, np.ndarray)) and len(raw_pred) > 0:
+            first_elem = raw_pred[0]
+            if isinstance(first_elem, (list, tuple, np.ndarray)):
+                daily_preds = [max(0.0, _safe_float(val)) for val in first_elem]
+            else:
+                daily_preds = [max(0.0, _safe_float(val)) for val in raw_pred]
+        else:
+            daily_preds = [max(0.0, _extract_prediction_scalar(raw_pred))]
+
+        if not daily_preds:
+            daily_preds = [0.0]
+
+        if len(daily_preds) >= horizon_days:
+            horizon_predictions = daily_preds[:horizon_days]
+        else:
+            avg_step = mean(daily_preds) if daily_preds else 0.0
+            horizon_predictions = daily_preds + [avg_step] * (horizon_days - len(daily_preds))
+
+    else:
+        # Backward-compatible recursive rollout for scalar single-target models
+        horizon_predictions = []
+        for step in range(1, horizon_days + 1):
+            target = anchor_date + timedelta(days=step)
+            feature_map = _build_feature_map(
+                store_id=store_id,
+                item_id=item_id,
+                target_date=target,
+                history=history,
+            )
+
+            row = [feature_map.get(column, 0.0) for column in feature_columns]
+            raw_pred = model.predict([row])
+            prediction = max(0.0, _extract_prediction_scalar(raw_pred))
+
+            horizon_predictions.append(prediction)
+            history.append(prediction)
 
     predicted_demand = round(sum(horizon_predictions), 2)
     predicted_daily = round(predicted_demand / max(horizon_days, 1), 2)
@@ -271,7 +316,7 @@ def generate_forecast_response(request: ForecastRequest) -> ForecastResponse:
 
         if model is not None and feature_columns is not None:
             anchor_date = _series_anchor_date(series.values)
-            LOGGER.info(
+            LOGGER.debug(
                 "running_model_forecast",
                 store_id=series.store_id,
                 product_id=series.product_id,
@@ -302,15 +347,6 @@ def generate_forecast_response(request: ForecastRequest) -> ForecastResponse:
                 product_id=series.product_id,
                 reason="model_unavailable",
             )
-
-        LOGGER.info(
-            "forecast_result",
-            source=source,
-            store_id=series.store_id,
-            product_id=series.product_id,
-            demand_7d=forecast_result["predicted_demand"],
-            daily_demand=forecast_result["predicted_daily_demand"],
-        )
 
         results.append(
             ForecastResult(
