@@ -18,6 +18,7 @@ all work transparently across every member in the fallback chain.
 from __future__ import annotations
 
 import os
+import time
 from functools import partial
 from typing import Any, Callable
 
@@ -107,30 +108,57 @@ _SAFEGUARD_PROVIDERS = [
 # Fallback chain
 # ---------------------------------------------------------------------------
 
+# Cooldown registry for rate-limited (429 / RESOURCE_EXHAUSTED) providers
+_PROVIDER_COOLDOWNS: dict[str, float] = {}
+_COOLDOWN_SECONDS = 60.0
+
+
 class _FallbackLLM:
     """
     A Runnable wrapper that tries each provider in order until one succeeds.
 
-    Rate-limit / quota errors (429), API failures (400/404), and connection
-    errors trigger a fallthrough to the next provider. The first successful
-    response is returned.
+    Initializes members lazily: only the primary provider is constructed upfront.
+    Fallback members are initialized on-demand if the primary fails.
+    Rate-limited providers (429 / RESOURCE_EXHAUSTED) are put on a 60s cooldown
+    to avoid burning latency on known-exhausted keys.
     """
 
     def __init__(self, members: list[Any], names: list[str], builders: list[Callable[[], Any]] | None = None):
-        self._members = members
-        self._names = names
+        self._members = list(members)
+        self._names = list(names)
         self._builders = builders or [lambda m=m: m for m in members]
+
+    def _get_member(self, idx: int) -> Any:
+        """Lazily initialize the member at index if not already instantiated."""
+        if self._members[idx] is None:
+            t0 = time.perf_counter()
+            self._members[idx] = self._builders[idx]()
+            LOGGER.debug(
+                "llm_member_lazy_initialized",
+                provider=self._names[idx],
+                ms=round((time.perf_counter() - t0) * 1000, 1),
+            )
+        return self._members[idx]
 
     # -- LangChain Runnable interface ---------------------------------------
 
     def invoke(self, input, config=None, **kwargs):
         last_error = None
-        for idx, (member, name) in enumerate(zip(self._members, self._names)):
+        now = time.time()
+        for idx, name in enumerate(self._names):
+            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
+                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
+                continue
             try:
+                member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try", provider=name)
                 return member.invoke(input, config=config, **kwargs)
             except Exception as exc:
                 last_error = exc
+                err_msg = str(exc).lower()
+                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                    _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
+                    LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 LOGGER.warning(
                     "llm_fallback_member_failed",
                     provider=name,
@@ -140,16 +168,25 @@ class _FallbackLLM:
 
     async def ainvoke(self, input, config=None, **kwargs):
         last_error = None
-        for idx, (member, name) in enumerate(zip(self._members, self._names)):
+        now = time.time()
+        for idx, name in enumerate(self._names):
+            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
+                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
+                continue
             try:
+                member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try", provider=name)
                 return await member.ainvoke(input, config=config, **kwargs)
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
+                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                    _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
+                    LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
                     try:
                         fresh_member = self._builders[idx]()
+                        self._members[idx] = fresh_member
                         return await fresh_member.ainvoke(input, config=config, **kwargs)
                     except Exception as exc2:
                         last_error = exc2
@@ -162,8 +199,13 @@ class _FallbackLLM:
 
     async def astream(self, input, config=None, **kwargs):
         last_error = None
-        for idx, (member, name) in enumerate(zip(self._members, self._names)):
+        now = time.time()
+        for idx, name in enumerate(self._names):
+            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
+                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
+                continue
             try:
+                member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try_astream", provider=name)
                 async for chunk in member.astream(input, config=config, **kwargs):
                     yield chunk
@@ -171,9 +213,13 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
+                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                    _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
+                    LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
                     try:
                         fresh_member = self._builders[idx]()
+                        self._members[idx] = fresh_member
                         async for chunk in fresh_member.astream(input, config=config, **kwargs):
                             yield chunk
                         return
@@ -187,65 +233,59 @@ class _FallbackLLM:
         raise last_error  # type: ignore[misc]
 
     def bind_tools(self, tools, **kwargs):
-        """Bind tools to every member of the fallback chain."""
-        new_members = []
-        new_names = []
-        new_builders = []
-        for member, name, builder in zip(self._members, self._names, self._builders):
+        """Bind tools lazily to fallback members."""
+        new_names = list(self._names)
+        new_builders = [
+            (lambda b=b, t=tools, kw=kwargs: b().bind_tools(t, **kw))
+            for b in self._builders
+        ]
+        new_members: list[Any] = [None] * len(new_builders)
+        # Bind member 0 immediately if already instantiated
+        if self._members and self._members[0] is not None:
             try:
-                bound = member.bind_tools(tools, **kwargs)
-                new_members.append(bound)
-                new_names.append(name)
-                new_builders.append(lambda b=builder, t=tools, kw=kwargs: b().bind_tools(t, **kw))
-            except Exception as exc:
-                LOGGER.warning("llm_bind_tools_member_failed", provider=name, error=str(exc)[:200])
-                new_members.append(member)
-                new_names.append(name)
-                new_builders.append(builder)
+                new_members[0] = self._members[0].bind_tools(tools, **kwargs)
+            except Exception:
+                new_members[0] = new_builders[0]()
+        elif new_builders:
+            new_members[0] = new_builders[0]()
         return _FallbackLLM(new_members, new_names, new_builders)
 
     def with_structured_output(self, schema: Any, **kwargs) -> _FallbackLLM:
-        """Bind structured output schema to every member of the fallback chain."""
-        new_members = []
-        new_names = []
-        new_builders = []
-        for member, name, builder in zip(self._members, self._names, self._builders):
+        """Bind structured output schema lazily to fallback members."""
+        new_names = list(self._names)
+        new_builders = [
+            (lambda b=b, s=schema, kw=kwargs: b().with_structured_output(s, **kw))
+            for b in self._builders
+        ]
+        new_members: list[Any] = [None] * len(new_builders)
+        # Bind member 0 immediately if already instantiated
+        if self._members and self._members[0] is not None:
             try:
-                structured_member = member.with_structured_output(schema, **kwargs)
-                new_members.append(structured_member)
-                new_names.append(name)
-                new_builders.append(lambda b=builder, s=schema, kw=kwargs: b().with_structured_output(s, **kw))
-            except Exception as exc:
-                LOGGER.warning(
-                    "llm_with_structured_output_member_failed",
-                    provider=name,
-                    error=str(exc)[:200],
-                )
-        if not new_members:
-            LOGGER.error("llm_with_structured_output_no_supported_members")
-            raise RuntimeError("No configured LLM member supports structured output for this schema.")
+                new_members[0] = self._members[0].with_structured_output(schema, **kwargs)
+            except Exception:
+                new_members[0] = new_builders[0]()
+        elif new_builders:
+            new_members[0] = new_builders[0]()
         return _FallbackLLM(new_members, new_names, new_builders)
 
     def with_config(self, config: dict | None = None, **kwargs) -> _FallbackLLM:
-        """Apply Runnable config (e.g. callbacks=[]) to every member of the fallback chain."""
-        new_members = []
-        new_builders = []
-        for member, builder in zip(self._members, self._builders):
-            if hasattr(member, "with_config"):
-                try:
-                    conf = member.with_config(config, **kwargs)
-                    new_members.append(conf)
-                    new_builders.append(lambda b=builder, c=config, kw=kwargs: b().with_config(c, **kw))
-                except Exception:
-                    new_members.append(member)
-                    new_builders.append(builder)
-            else:
-                new_members.append(member)
-                new_builders.append(builder)
-        return _FallbackLLM(new_members, list(self._names), new_builders)
+        """Apply Runnable config (e.g. callbacks=[]) lazily to fallback members."""
+        new_names = list(self._names)
+        new_builders = [
+            (lambda b=b, c=config, kw=kwargs: b().with_config(c, **kw) if hasattr(b(), "with_config") else b())
+            for b in self._builders
+        ]
+        new_members: list[Any] = [None] * len(new_builders)
+        if self._members and self._members[0] is not None:
+            m = self._members[0]
+            new_members[0] = m.with_config(config, **kwargs) if hasattr(m, "with_config") else m
+        elif new_builders:
+            new_members[0] = new_builders[0]()
+        return _FallbackLLM(new_members, new_names, new_builders)
 
     def __getattr__(self, item):
-        return getattr(self._members[0], item)
+        member0 = self._get_member(0)
+        return getattr(member0, item)
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +299,6 @@ _safeguard_llm_cache: _FallbackLLM | None = None
 
 
 def _build_chain(provider_list: list) -> _FallbackLLM | None:
-    members: list[Any] = []
     names: list[str] = []
     builders: list[Callable[[], Any]] = []
 
@@ -269,14 +308,9 @@ def _build_chain(provider_list: list) -> _FallbackLLM | None:
             base_url = settings.ollama_base_url or os.getenv("OLLAMA_BASE_URL")
             if not base_url:
                 continue
-            try:
-                b_fn = partial(build_fn, model, base_url=base_url)
-                llm = b_fn()
-                members.append(llm)
-                builders.append(b_fn)
-                names.append(f"ollama/{model}")
-            except Exception as exc:
-                LOGGER.warning("llm_provider_init_failed", provider="ollama", model=model, error=str(exc)[:200])
+            b_fn = partial(build_fn, model, base_url=base_url)
+            builders.append(b_fn)
+            names.append(f"ollama/{model}")
             continue
 
         keys = get_provider_keys(provider_prefix)
@@ -284,28 +318,26 @@ def _build_chain(provider_list: list) -> _FallbackLLM | None:
             continue
 
         for idx, key in enumerate(keys, 1):
-            try:
-                if provider_name == "gemini":
-                    b_fn = partial(_build_gemini, model, api_key=key)
-                else:
-                    b_fn = partial(build_fn, model, api_key=key)
+            if provider_name == "gemini":
+                b_fn = partial(_build_gemini, model, api_key=key)
+            else:
+                b_fn = partial(build_fn, model, api_key=key)
 
-                llm = b_fn()
-                members.append(llm)
-                builders.append(b_fn)
-                key_tag = f"key_{idx}"
-                names.append(f"{provider_name}/{model} ({key_tag})")
-            except Exception as exc:
-                LOGGER.warning(
-                    "llm_provider_init_failed",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    error=str(exc)[:200],
-                )
+            builders.append(b_fn)
+            key_tag = f"key_{idx}"
+            names.append(f"{provider_name}/{model} ({key_tag})")
 
-    if not members:
+    if not builders:
         return None
+
+    # Lazy members: initialize only the primary member upfront to eliminate startup lag
+    members: list[Any] = [None] * len(builders)
+    try:
+        t0 = time.perf_counter()
+        members[0] = builders[0]()
+        LOGGER.info("llm_primary_member_ready", provider=names[0], ms=round((time.perf_counter() - t0) * 1000, 1))
+    except Exception as exc:
+        LOGGER.warning("llm_primary_member_init_failed", provider=names[0], error=str(exc)[:200])
 
     return _FallbackLLM(members, names, builders)
 
@@ -392,66 +424,13 @@ def get_small_llm() -> _FallbackLLM | None:
     gemini_providers = [p for p in _SMALL_PROVIDERS if p[0] == "gemini"]
     reordered_providers = small_providers + gemini_providers
 
-    members: list[Any] = []
-    names: list[str] = []
-    builders: list[Callable[[], Any]] = []
-
-    for provider_name, model, build_fn, provider_prefix in reordered_providers:
-        if provider_name == "ollama":
-            settings = get_settings()
-            base_url = settings.ollama_base_url or os.getenv("OLLAMA_BASE_URL")
-            if not base_url:
-                continue
-            try:
-                b_fn = partial(build_fn, model, base_url=base_url)
-                llm = b_fn()
-                members.append(llm)
-                builders.append(b_fn)
-                names.append(f"ollama/{model}")
-                LOGGER.info("small_llm_provider_ready", provider="ollama", model=model, position=len(members))
-            except Exception as exc:
-                LOGGER.warning("small_llm_provider_init_failed", provider="ollama", model=model, error=str(exc)[:200])
-            continue
-
-        keys = get_provider_keys(provider_prefix)
-        if not keys:
-            LOGGER.debug("small_llm_provider_skip_no_key", provider=provider_name, model=model)
-            continue
-
-        for idx, key in enumerate(keys, 1):
-            try:
-                if provider_name == "gemini":
-                    b_fn = partial(_build_gemini, model, api_key=key)
-                else:
-                    b_fn = partial(build_fn, model, api_key=key)
-
-                llm = b_fn()
-                members.append(llm)
-                builders.append(b_fn)
-                key_tag = f"key_{idx}"
-                names.append(f"{provider_name}/{model} ({key_tag})")
-                LOGGER.info(
-                    "small_llm_provider_ready",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    position=len(members),
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "small_llm_provider_init_failed",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    error=str(exc)[:200],
-                )
-
-    if not members:
+    chain = _build_chain(reordered_providers)
+    if chain is None:
         LOGGER.error("small_llm_no_provider_configured")
         return None
 
-    LOGGER.info("small_llm_fallback_chain_built", members=names)
-    _small_llm_cache = _FallbackLLM(members, names, builders)
+    LOGGER.info("small_llm_fallback_chain_built", members=chain._names)
+    _small_llm_cache = chain
     return _small_llm_cache
 
 

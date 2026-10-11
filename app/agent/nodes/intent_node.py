@@ -35,12 +35,19 @@ _REFUSAL_OFF_TOPIC = (
 )
 
 _LIVE_TERMS = (
-    "inventory", "stock", "stockout", "out of stock", "sales", "selling",
-    "forecast", "forecasting", "restock", "anomaly", "store insight",
-    "store summary", "store overview", "store health",
+    "inventory", "stock", "stockout", "out of stock", "sales", "selling", "sell", "sold",
+    "revenue", "profit", "loss", "margin", "margins", "earnings", "income", "p&l",
+    "forecast", "forecasting", "restock", "restocking", "reorder", "demand",
+    "anomaly", "store insight", "store summary", "store overview", "store health",
+    "lifetime", "turnover", "orders", "order", "bill", "billing", "invoice",
     "buyer dues", "seller dues", "supplier dues", "buyers owe", "owe sellers",
     "owe suppliers", "receivables", "payables", "outstanding payments",
-    "pending payments", "amount i owe",
+    "pending payments", "amount i owe", "dues", "debt",
+    "calculate", "calculation", "audit", "performance",
+    "top selling", "best selling", "fast moving", "slow moving", "dead stock",
+    "category", "supplier", "suppliers", "buyer", "buyers", "customer", "customers",
+    "today", "yesterday", "this month", "last month", "this year", "last year", "end of this year",
+    "growth", "target", "kpi",
 )
 _MEMORY_TERMS = (
     "remember", "last time", "previous", "earlier", "we decided",

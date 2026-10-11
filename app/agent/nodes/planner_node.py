@@ -7,24 +7,30 @@ It generates a structured plan without executing any tools.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import structlog
 from typing import Dict, Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.agent.state import VyaparAgentState
-from app.lib.llm import get_llm
-from app.agent.tools.registry import VYAPAR_TOOLS
+from app.lib.llm import get_small_llm
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.planner")
 
+_PLANNER_CAPABILITIES = """- Inventory tools: check stock levels, low stock alerts, stockout risk, dead stock, and product details.
+- Sales & Profit tools: sales summary (revenue & profit), top selling products, sales trends, profit margin analysis, and sales anomalies.
+- Forecasting & Restock tools: demand forecasts, restock priorities, and restock budget.
+- Supplier & Buyer tools: supplier dues, buyer dues, pending payments, and purchase orders.
+- Store Insights tools: store overview, daily action checklist, and business health metrics."""
+
 _PLANNER_PROMPT = """You are the Vyapar Sakha Planner.
-Your job is to analyze the user's complex request and build a simple execution plan of 2 to 4 actionable steps.
-Do NOT execute tools directly. Do NOT invent hypothetical external APIs.
-Only recommend steps that utilize the system's available tools.
+Analyze the user's complex request and build an actionable execution plan of 2 to 4 high-level steps.
+Do NOT execute tools. Only recommend steps using available system capabilities:
 
 Available capabilities:
-{tool_descriptions}
+{capabilities}
 
 EXAMPLE:
 User Request: "Audit my store inventory and prepare a restock recommendation."
@@ -48,48 +54,61 @@ Output your response strictly as JSON with no extra markdown formatting:
 }}
 """
 
+
 async def planner_node(state: VyaparAgentState) -> Dict[str, Any]:
     prompt = state.get("user_prompt", "").strip()
     store_id = state.get("store_id", "unknown")
-    
+    t0 = time.perf_counter()
+
     LOGGER.info("planner_node_start", store_id=store_id, prompt_len=len(prompt))
-    
-    llm = get_llm()
+
+    llm = get_small_llm()
     if not llm:
         LOGGER.error("planner_node_no_llm")
-        return {}
-    
-    tool_descriptions = "\n".join([f"- {t.name}: {t.description}" for t in VYAPAR_TOOLS])
-    sys_content = _PLANNER_PROMPT.format(tool_descriptions=tool_descriptions)
-    
+        return {
+            "plan": {
+                "goal": prompt,
+                "steps": ["Analyze the request and use available tools to answer."],
+            }
+        }
+
+    sys_content = _PLANNER_PROMPT.format(capabilities=_PLANNER_CAPABILITIES)
+
     messages = [
         SystemMessage(content=sys_content),
-        HumanMessage(content=f"Create a plan for this request: {prompt}")
+        HumanMessage(content=f"Create a plan for this request: {prompt}"),
     ]
-    
+
     try:
-        response = await llm.ainvoke(messages, config={"tags": ["hide_stream"]})
+        response = await asyncio.wait_for(
+            llm.ainvoke(messages, config={"tags": ["hide_stream"]}),
+            timeout=5.0,
+        )
         content = response.content.strip()
-        
+
         if content.startswith("```json"):
             content = content[7:]
         if content.startswith("```"):
             content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
-            
+
         plan_data = json.loads(content.strip())
-        
-        LOGGER.info("planner_node_success", steps=len(plan_data.get("steps", [])))
-        
-        return {
-            "plan": plan_data
-        }
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+        LOGGER.info(
+            "planner_node_success",
+            steps=len(plan_data.get("steps", [])),
+            latency_ms=elapsed_ms,
+        )
+
+        return {"plan": plan_data}
     except Exception as exc:
-        LOGGER.error("planner_node_error", error=str(exc))
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        LOGGER.warning("planner_node_fallback", error=str(exc)[:150], latency_ms=elapsed_ms)
         return {
             "plan": {
                 "goal": prompt,
-                "steps": ["Analyze the request and use available tools to answer."]
+                "steps": ["Analyze the request and use available tools to answer."],
             }
         }
