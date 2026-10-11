@@ -82,7 +82,7 @@ async def planner_node(state: VyaparAgentState) -> Dict[str, Any]:
     try:
         response = await asyncio.wait_for(
             llm.ainvoke(messages, config={"tags": ["hide_stream"]}),
-            timeout=5.0,
+            timeout=12.0,
         )
         content = response.content.strip()
 

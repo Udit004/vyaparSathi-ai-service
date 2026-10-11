@@ -82,25 +82,26 @@ _OPENAI_BASE_URL = {
 # Providers prioritized for Complex Reasoning, Planning, Synthesis, and Main Thinking Nodes
 _LARGE_PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("groq", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
-    ("openrouter", "openai/gpt-oss-120b:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
-    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
-# Providers prioritized for Fast/Lightweight tasks: Memory extraction, retrieval, summarization, intent routing
+# Providers prioritized for Fast/Lightweight tasks: Memory extraction, retrieval, summarization, intent routing, planner
 _SMALL_PROVIDERS = [
-    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
     ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
-    ("groq", "llama-3.1-8b-instant", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
 ]
 
 _SAFEGUARD_PROVIDERS = [
     ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
     ("groq", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
 ]
 
 
@@ -110,7 +111,7 @@ _SAFEGUARD_PROVIDERS = [
 
 # Cooldown registry for rate-limited (429 / RESOURCE_EXHAUSTED) providers
 _PROVIDER_COOLDOWNS: dict[str, float] = {}
-_COOLDOWN_SECONDS = 60.0
+_COOLDOWN_SECONDS = 30.0
 
 
 class _FallbackLLM:
@@ -119,7 +120,7 @@ class _FallbackLLM:
 
     Initializes members lazily: only the primary provider is constructed upfront.
     Fallback members are initialized on-demand if the primary fails.
-    Rate-limited providers (429 / RESOURCE_EXHAUSTED) are put on a 60s cooldown
+    Rate-limited providers (429 / RESOURCE_EXHAUSTED / TPM limits) are put on a cooldown
     to avoid burning latency on known-exhausted keys.
     """
 
@@ -143,12 +144,17 @@ class _FallbackLLM:
     # -- LangChain Runnable interface ---------------------------------------
 
     def invoke(self, input, config=None, **kwargs):
-        last_error = None
         now = time.time()
-        for idx, name in enumerate(self._names):
-            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
-                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
-                continue
+        valid_indices = [idx for idx, name in enumerate(self._names) if _PROVIDER_COOLDOWNS.get(name, 0) <= now]
+        if not valid_indices:
+            LOGGER.warning("llm_all_providers_on_cooldown_resetting", providers=self._names)
+            for name in self._names:
+                _PROVIDER_COOLDOWNS.pop(name, None)
+            valid_indices = list(range(len(self._names)))
+
+        last_error = None
+        for idx in valid_indices:
+            name = self._names[idx]
             try:
                 member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try", provider=name)
@@ -156,7 +162,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 LOGGER.warning(
@@ -164,15 +170,23 @@ class _FallbackLLM:
                     provider=name,
                     error=str(exc)[:200],
                 )
-        raise last_error  # type: ignore[misc]
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"All LLM providers ({self._names}) failed to invoke.")
 
     async def ainvoke(self, input, config=None, **kwargs):
-        last_error = None
         now = time.time()
-        for idx, name in enumerate(self._names):
-            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
-                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
-                continue
+        valid_indices = [idx for idx, name in enumerate(self._names) if _PROVIDER_COOLDOWNS.get(name, 0) <= now]
+        if not valid_indices:
+            LOGGER.warning("llm_all_providers_on_cooldown_resetting", providers=self._names)
+            for name in self._names:
+                _PROVIDER_COOLDOWNS.pop(name, None)
+            valid_indices = list(range(len(self._names)))
+
+        last_error = None
+        for idx in valid_indices:
+            name = self._names[idx]
             try:
                 member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try", provider=name)
@@ -180,7 +194,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
@@ -195,15 +209,23 @@ class _FallbackLLM:
                     provider=name,
                     error=str(exc)[:200],
                 )
-        raise last_error  # type: ignore[misc]
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"All LLM providers ({self._names}) failed to invoke.")
 
     async def astream(self, input, config=None, **kwargs):
-        last_error = None
         now = time.time()
-        for idx, name in enumerate(self._names):
-            if _PROVIDER_COOLDOWNS.get(name, 0) > now:
-                LOGGER.debug("llm_fallback_skipping_cooldown", provider=name)
-                continue
+        valid_indices = [idx for idx, name in enumerate(self._names) if _PROVIDER_COOLDOWNS.get(name, 0) <= now]
+        if not valid_indices:
+            LOGGER.warning("llm_all_providers_on_cooldown_resetting", providers=self._names)
+            for name in self._names:
+                _PROVIDER_COOLDOWNS.pop(name, None)
+            valid_indices = list(range(len(self._names)))
+
+        last_error = None
+        for idx in valid_indices:
+            name = self._names[idx]
             try:
                 member = self._get_member(idx)
                 LOGGER.debug("llm_fallback_try_astream", provider=name)
@@ -213,7 +235,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
@@ -230,17 +252,28 @@ class _FallbackLLM:
                     provider=name,
                     error=str(exc)[:200],
                 )
-        raise last_error  # type: ignore[misc]
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"All LLM providers ({self._names}) failed to stream.")
 
     def bind_tools(self, tools, **kwargs):
         """Bind tools lazily to fallback members."""
         new_names = list(self._names)
-        new_builders = [
-            (lambda b=b, t=tools, kw=kwargs: b().bind_tools(t, **kw))
-            for b in self._builders
-        ]
+        new_builders = []
+        for b in self._builders:
+            def _make_tool_bound_builder(builder=b):
+                instance = builder()
+                if hasattr(instance, "bind_tools"):
+                    try:
+                        return instance.bind_tools(tools, **kwargs)
+                    except Exception as e:
+                        LOGGER.warning("bind_tools_failed_on_member", error=str(e)[:150])
+                        return instance
+                return instance
+            new_builders.append(_make_tool_bound_builder)
+
         new_members: list[Any] = [None] * len(new_builders)
-        # Bind member 0 immediately if already instantiated
         if self._members and self._members[0] is not None:
             try:
                 new_members[0] = self._members[0].bind_tools(tools, **kwargs)
@@ -253,12 +286,20 @@ class _FallbackLLM:
     def with_structured_output(self, schema: Any, **kwargs) -> _FallbackLLM:
         """Bind structured output schema lazily to fallback members."""
         new_names = list(self._names)
-        new_builders = [
-            (lambda b=b, s=schema, kw=kwargs: b().with_structured_output(s, **kw))
-            for b in self._builders
-        ]
+        new_builders = []
+        for b in self._builders:
+            def _make_structured_builder(builder=b):
+                instance = builder()
+                if hasattr(instance, "with_structured_output"):
+                    try:
+                        return instance.with_structured_output(schema, **kwargs)
+                    except Exception as e:
+                        LOGGER.warning("with_structured_output_failed_on_member", error=str(e)[:150])
+                        return instance
+                return instance
+            new_builders.append(_make_structured_builder)
+
         new_members: list[Any] = [None] * len(new_builders)
-        # Bind member 0 immediately if already instantiated
         if self._members and self._members[0] is not None:
             try:
                 new_members[0] = self._members[0].with_structured_output(schema, **kwargs)

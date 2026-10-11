@@ -12,7 +12,7 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState, ToolCall
-from app.lib.llm import get_llm
+from app.lib.llm import get_llm, get_small_llm
 from app.lib.summarizer import summarize
 from app.agent.tools.registry import VYAPAR_TOOLS
 from app.agent.prompts.system_prompts import (
@@ -24,7 +24,7 @@ from app.agent.prompts.system_prompts import (
 )
 from app.agent.prompts.summarizer_prompts import SUMMARIZER_HISTORY_INSTRUCTION
 from app.agent.utils import latest_human_prompt
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.think")
 
@@ -281,6 +281,9 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
 
     sys_msg = SystemMessage(content=sys_content)
     messages = [sys_msg] + recent_messages
+    if not any(getattr(m, "type", None) == "human" for m in recent_messages):
+        user_prompt = state.get("user_prompt", "") or current_goal or "Please assist me."
+        messages.append(HumanMessage(content=user_prompt))
 
     LOGGER.debug(
         "think_node_invoking_llm",
@@ -296,8 +299,39 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
             config={"configurable": {"user_id": user_id, "store_id": store_id}},
         )
     except Exception as exc:
-        LOGGER.error("think_node_llm_error", loop=loop, error=str(exc), exc_info=True)
-        return {"error": str(exc), "goal_status": "failed"}
+        LOGGER.warning("think_node_llm_with_tools_failed_trying_fallback", loop=loop, error=str(exc)[:200])
+        try:
+            # Fallback 1: Direct invocation without tool binding (in case tool schema hit provider token limits)
+            LOGGER.info("think_node_fallback_direct_llm", loop=loop)
+            response = await llm.ainvoke(
+                messages,
+                config={"configurable": {"user_id": user_id, "store_id": store_id}},
+            )
+        except Exception as exc2:
+            LOGGER.warning("think_node_direct_llm_failed_trying_small_llm", loop=loop, error=str(exc2)[:200])
+            try:
+                # Fallback 2: Try fast small LLM chain (Groq / Gemini Lite / NVIDIA)
+                small_llm = get_small_llm()
+                if small_llm:
+                    LOGGER.info("think_node_fallback_small_llm", loop=loop)
+                    response = await small_llm.ainvoke(
+                        messages,
+                        config={"configurable": {"user_id": user_id, "store_id": store_id}},
+                    )
+                else:
+                    raise exc2
+            except Exception as exc3:
+                LOGGER.error("think_node_all_fallbacks_failed", loop=loop, error=str(exc3), exc_info=True)
+                fallback_msg = (
+                    "Namaste! I am currently experiencing high load with AI service providers. "
+                    "Please try your question again in a few moments."
+                )
+                return {
+                    "error": str(exc3),
+                    "goal_status": "complete",
+                    "final_answer": fallback_msg,
+                    "messages": [AIMessage(content=fallback_msg)],
+                }
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
