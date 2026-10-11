@@ -216,26 +216,20 @@ def build_graph(checkpointer=None):
     # Safe  → think
     # --------------------------------------------------------------
 
+    # --------------------------------------------------------------
+    # Conditional edges from intent
+    # intent -> greeting short-circuit (__end__), memory_query, planner, or think
+    # --------------------------------------------------------------
     workflow.add_conditional_edges(
         "intent",
-        _route_after_grader,
+        _route_after_intent,
         {
-            "think": "think",
             "__end__": END,
-            "intent": "intent",
+            "think": "think",
+            "memory_query": "memory_query",
+            "planner": "planner",
         },
     )
-
-    # intent -> greeting short-circuit or memory_query
-    # workflow.add_conditional_edges(
-    #     "intent",
-    #     _route_after_intent,
-    #     {
-    #         "__end__": END,
-    #         "think": "think",
-    #         "memory_query": "memory_query",
-    #     },
-    # )
 
     # memory_query -> planner or think
     workflow.add_conditional_edges(
