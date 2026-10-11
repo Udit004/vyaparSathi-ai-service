@@ -220,6 +220,13 @@ async def _stream_graph_events(
     assistant_text_parts: list[str] = []
     interrupt_payloads: list = []
 
+    # Track critic-reflection state to suppress intermediate think responses.
+    # When critic FAILS → reflection → think retries, the intermediate think
+    # tokens should NOT be streamed since they were rejected. Only the final
+    # think pass (after critic PASS or graph end) is shown to the user.
+    in_critic_retry: bool = False   # True while inside a reflection-retry cycle
+    pending_text_parts: list[str] = []  # Buffer for tokens during retry
+
     try:
         LOGGER.info(
             "graph_stream_start",
@@ -255,6 +262,39 @@ async def _stream_graph_events(
             if kind == "on_tool_end":
                 tools_used_set.add(name)
 
+            # --- Critic-reflection cycle tracking ---
+            # When reflection node starts, we're in a retry cycle.
+            # Discard any already-buffered pending tokens (the rejected answer)
+            # and mark that subsequent think tokens should be buffered, not streamed.
+            if kind == "on_chain_start" and name == "reflection":
+                in_critic_retry = True
+                pending_text_parts = []  # Discard rejected intermediate answer
+                # Emit a UI hint so the user sees something is happening
+                yield f"event: token\ndata: {json.dumps({'text': '\n_[Improving answer...]_\n'})}\n\n"
+                continue
+
+            # When a new think node starts after reflection, clear the pending buffer
+            if kind == "on_chain_start" and name == "think" and in_critic_retry:
+                pending_text_parts = []
+                continue
+
+            # When critic node ends with PASS (goal_status == complete), exit retry mode
+            # and flush the pending buffer to the stream.
+            if kind == "on_chain_end" and name == "critic":
+                output = data.get("output", {}) or {}
+                critic_status = output.get("goal_status", "")
+                if critic_status in ("complete", "review") and in_critic_retry:
+                    # Critic passed — flush buffered tokens to the real stream
+                    if pending_text_parts:
+                        flushed = "".join(_flatten_text(p) for p in pending_text_parts)
+                        # Send as a single replacement token so UI can replace buffered content
+                        yield f"event: token\ndata: {json.dumps({'text': flushed})}\n\n"
+                        assistant_text_parts.extend(pending_text_parts)
+                        pending_text_parts = []
+                    if critic_status == "complete":
+                        in_critic_retry = False
+                continue
+
             # --- Stream LLM tokens ---
             if kind == "on_chat_model_stream":
                 tags = event.get("tags", [])
@@ -268,8 +308,12 @@ async def _stream_graph_events(
                 msg_chunk = event["data"]["chunk"]
                 if msg_chunk.content:
                     text = _flatten_text(msg_chunk.content)
-                    assistant_text_parts.append(text)
-                    yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
+                    if in_critic_retry:
+                        # Buffer tokens during retry — don't stream intermediate rejected answers
+                        pending_text_parts.append(text)
+                    else:
+                        assistant_text_parts.append(text)
+                        yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
 
             # --- Tool call events ---
             elif kind == "on_tool_start":
@@ -397,6 +441,13 @@ async def _stream_graph_events(
             elif kind == "on_chain_end" and name in {"morning_briefing", "deep_inventory", "smart_restock", "web_research", "document_generation"}:
                 yield f"event: subgraph_end\ndata: {json.dumps({'name': name})}\n\n"
 
+
+        # Flush any buffered retry tokens if not already flushed
+        if pending_text_parts:
+            flushed = "".join(_flatten_text(p) for p in pending_text_parts)
+            yield f"event: token\ndata: {json.dumps({'text': flushed})}\n\n"
+            assistant_text_parts.extend(pending_text_parts)
+            pending_text_parts = []
 
         # --- Post-stream: populate result dict ---
         result["full_response"] = "".join(

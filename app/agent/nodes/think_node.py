@@ -262,7 +262,20 @@ async def think_node(state: VyaparAgentState) -> Dict[str, Any]:
     # system instruction at position 0.
     # Sliding window: keep the last 6 messages verbatim (3 full user+assistant turns)
     # for better continuity. Everything older is compressed into a compact summary.
+    t_window_start = time.perf_counter()
     window_summary, recent_messages = await _sliding_window(raw_messages, keep_last=6)
+    t_window_ms = round((time.perf_counter() - t_window_start) * 1000, 1)
+
+    if t_window_ms > 200:
+        LOGGER.warning(
+            "think_node_sliding_window_slow",
+            loop=loop,
+            window_ms=t_window_ms,
+            raw_message_count=len(raw_messages),
+        )
+    else:
+        LOGGER.debug("think_node_sliding_window", loop=loop, window_ms=t_window_ms)
+
     if window_summary:
         sys_content = sys_content + "\n\n" + window_summary
 
@@ -740,7 +753,9 @@ async def _sliding_window(messages, *, keep_last: int = 3):
 
     # If the older segment is large, compress it with the small summarizer
     # (GROQ/NVIDIA) so the sliding-window summary stays tiny.
-    if len(raw_summary) > 600:
+    # Threshold is set high (3000 chars) because calling the summarizer LLM
+    # costs ~5-10s and is only worth it for very long conversation histories.
+    if len(raw_summary) > 5000:
         compressed = await summarize(
             raw_summary,
             instruction=SUMMARIZER_HISTORY_INSTRUCTION,

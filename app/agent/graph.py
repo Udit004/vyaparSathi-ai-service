@@ -122,6 +122,17 @@ def _route_after_critic(state: VyaparAgentState) -> str:
     return END
 
 
+def _route_after_reflection(state: VyaparAgentState) -> str:
+    """
+    Conditional edge function called after reflection_node.
+    If reflection capped out (goal_status == 'complete'), terminate graph.
+    Otherwise, loop back to think for another try.
+    """
+    if state.get("goal_status") == "complete":
+        return END
+    return "think"
+
+
 def _route_after_think(state: VyaparAgentState) -> str:
     """
     Conditional edge function called after think_node.
@@ -275,10 +286,17 @@ def build_graph(checkpointer=None):
     )
 
     # --------------------------------------------------------------
-    # reflection -> think
+    # Conditional edges from reflection
     # --------------------------------------------------------------
 
-    workflow.add_edge("reflection", "think")
+    workflow.add_conditional_edges(
+        "reflection",
+        _route_after_reflection,
+        {
+            "think": "think",
+            "__end__": END,
+        },
+    )
 
     # --------------------------------------------------------------
     # interrupt → think (graph pauses at interrupt() inside the node;

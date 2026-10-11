@@ -8,13 +8,23 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.lib.llm import get_llm
+from app.lib.llm import get_small_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.reflection")
 
 async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
-    llm = get_llm()
+    # Hard cap: only allow 1 reflection retry. The screenshots showed
+    # 2 full critic-reflection cycles (50s total). If the first retry
+    # doesn't fix it, more retries rarely help and just waste time.
+    reflection_count = state.get("reflection_count", 0)
+    if reflection_count >= 1:
+        LOGGER.info("reflection_node_max_reached", reflection_count=reflection_count)
+        return {"goal_status": "complete"}  # Accept the best answer we have
+
+    # Use a fast/small model — reflection just needs to suggest which tools
+    # to call next, not do heavy reasoning. This saves ~12s vs using Claude.
+    llm = get_small_llm()
     if not llm:
         return {"goal_status": "complete"}
         
@@ -68,6 +78,7 @@ async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
     return {
         "goal_status": "in_progress",
         "reflection": reflection_text,
+        "reflection_count": reflection_count + 1,
         "messages": [reflection_msg],
         "loop_count": current_loop + 1
     }

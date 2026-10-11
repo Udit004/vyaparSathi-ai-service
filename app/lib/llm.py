@@ -252,6 +252,12 @@ class _FallbackLLM:
 # Internal builder helper
 # ---------------------------------------------------------------------------
 
+# Module-level cache so the chain is built once per process, not on every call.
+_llm_cache: _FallbackLLM | None = None
+_small_llm_cache: _FallbackLLM | None = None
+_safeguard_llm_cache: _FallbackLLM | None = None
+
+
 def _build_chain(provider_list: list) -> _FallbackLLM | None:
     members: list[Any] = []
     names: list[str] = []
@@ -309,16 +315,19 @@ def get_llm() -> _FallbackLLM | None:
     Return the primary fallback LLM chain for complex reasoning, planning,
     and synthesis tasks.
 
-    Builds (on each call) a ``_FallbackLLM`` over ``_LARGE_PROVIDERS``,
-    ordered by priority: Gemini first, then Groq, OpenRouter, NVIDIA, and
-    Ollama (local). Returns ``None`` when no provider key is configured.
+    Builds the ``_FallbackLLM`` once and caches it at module level.
+    Returns ``None`` when no provider key is configured.
     """
+    global _llm_cache
+    if _llm_cache is not None:
+        return _llm_cache
     chain = _build_chain(_LARGE_PROVIDERS)
     if chain is None:
         LOGGER.error("get_llm_no_provider_configured")
         return None
     LOGGER.info("get_llm_fallback_chain_built", members=chain._names)
-    return chain
+    _llm_cache = chain
+    return _llm_cache
 
 
 def get_safeguard_llm() -> _FallbackLLM | None:
@@ -371,11 +380,16 @@ def get_small_llm() -> _FallbackLLM | None:
     """
     Return the fallback LLM chain prioritizing small/fast models.
 
+    Builds the chain once and caches it at module level.
     Iterates through Groq, OpenRouter, NVIDIA, and Ollama first,
     falling back to Gemini only if no fast models are available.
     """
-    small_providers = [p for p in _LARGE_PROVIDERS if p[0] != "gemini"]
-    gemini_providers = [p for p in _LARGE_PROVIDERS if p[0] == "gemini"]
+    global _small_llm_cache
+    if _small_llm_cache is not None:
+        return _small_llm_cache
+
+    small_providers = [p for p in _SMALL_PROVIDERS if p[0] != "gemini"]
+    gemini_providers = [p for p in _SMALL_PROVIDERS if p[0] == "gemini"]
     reordered_providers = small_providers + gemini_providers
 
     members: list[Any] = []
@@ -437,12 +451,17 @@ def get_small_llm() -> _FallbackLLM | None:
         return None
 
     LOGGER.info("small_llm_fallback_chain_built", members=names)
-    return _FallbackLLM(members, names, builders)
+    _small_llm_cache = _FallbackLLM(members, names, builders)
+    return _small_llm_cache
 
 
 def clear_llm_cache():
-    """No-op kept for backwards compatibility."""
-    pass
+    """Clear all cached LLM chain instances (useful for testing or key rotation)."""
+    global _llm_cache, _small_llm_cache, _safeguard_llm_cache
+    _llm_cache = None
+    _small_llm_cache = None
+    _safeguard_llm_cache = None
+    LOGGER.info("llm_cache_cleared")
 
 
 def get_llm_status() -> dict:

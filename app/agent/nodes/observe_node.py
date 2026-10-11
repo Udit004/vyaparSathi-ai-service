@@ -27,7 +27,8 @@ LOGGER = structlog.get_logger("vyaparsathi.ai.agent.observe")
 
 # Payloads smaller than this are passed through verbatim — no need to
 # spend a summarizer call on trivial data.
-_MIN_SUMMARIZE_CHARS = 600
+# Set to 2000 chars to avoid expensive LLM calls for typical tool responses.
+_MIN_SUMMARIZE_CHARS = 3000
 
 
 async def observe_node(state: VyaparAgentState) -> Dict[str, Any]:

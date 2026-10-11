@@ -5,11 +5,12 @@ Critic node — evaluates the draft answer against the goal and available data.
 """
 
 from typing import Dict, Any, List
+import asyncio
 import structlog
 from pydantic import BaseModel, Field
 
 from app.agent.state import VyaparAgentState
-from app.lib.llm import get_llm
+from app.lib.llm import get_small_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.critic")
@@ -21,7 +22,9 @@ class CriticResult(BaseModel):
     needs_retry: bool = Field(description="True if the agent should retry to get the missing information.")
 
 async def critic_node(state: VyaparAgentState) -> Dict[str, Any]:
-    llm = get_llm()
+    # Use a fast/small model — critic just needs pass/fail evaluation,
+    # not heavy reasoning. This saves 5-10s vs using the main Claude model.
+    llm = get_small_llm()
     if not llm:
         return {"goal_status": "complete"}
     
@@ -84,14 +87,18 @@ async def critic_node(state: VyaparAgentState) -> Dict[str, Any]:
     status = result.status.upper()
     LOGGER.info("critic_node_result", status=status, reason=result.reason)
     
-    if status == "FAIL" and result.needs_retry:
+    reflection_count = state.get("reflection_count", 0)
+    if status == "FAIL" and result.needs_retry and reflection_count < 1:
         return {
             "goal_status": "reflect",
             "critic_status": status,
             "critic_reason": result.reason,
             "critic_missing_information": result.missing_information
         }
-        
+
+    if status == "FAIL" and reflection_count >= 1:
+        LOGGER.info("critic_node_max_reflection_reached", reflection_count=reflection_count)
+
     return {
         "goal_status": "complete",
         "critic_status": status,

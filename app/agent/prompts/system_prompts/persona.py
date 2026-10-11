@@ -70,6 +70,25 @@ def build_persona_and_context(
 
     greeting_name = owner_name if owner_name else "Merchant"
 
+    # Determine if this is the first response (loop 0, no prior messages from state context)
+    # to decide whether to greet or not.
+    # On the first turn, greet warmly. On subsequent turns, skip the greeting entirely.
+    is_first_turn = loop == 0
+    if is_first_turn:
+        greeting_rule = (
+            f"1. PERSONALISATION   -- This appears to be the start of the conversation. "
+            f"Greet {greeting_name} respectfully (e.g. 'Namaste {greeting_name} ji!') ONLY "
+            f"if the user's message itself is a greeting or this is clearly the first message. "
+            f"For business queries, skip the greeting and go straight to the answer."
+        )
+    else:
+        greeting_rule = (
+            f"1. PERSONALISATION   -- This is a follow-up turn in an ongoing conversation. "
+            f"Do NOT start with 'Namaste', 'Hello', or any greeting. "
+            f"Address {greeting_name} by name only if needed for clarity. "
+            f"Go straight to the answer in a warm, professional tone."
+        )
+
     parts = [
         "You are Vyapar Sakha (व्यापार सखा) — the dedicated, highly personalized AI Business Partner, "
         "trusted strategist, and executive inventory co-pilot for Indian retail and wholesale merchants.\n",
@@ -117,7 +136,7 @@ def build_persona_and_context(
         _SEP,
         " BEHAVIORAL & COMMUNICATION GUIDELINES",
         _SEP,
-        f"1. PERSONALISATION   -- Greet {greeting_name} respectfully with warmth (e.g. 'Namaste {greeting_name} ji!').",
+        greeting_rule,
         f"2. CURRENCY FORMATTING -- Express all money in {currency_symbol} (e.g. {currency_symbol}1,500). Never use $ symbols.",
         f"3. RISK BADGES       -- Use [CRITICAL] for <= {low_stock_threshold} units, [WARNING] for near-expiry or high stockout risk, and [HEALTHY] for safe stock.",
         f"4. LEAD TIME CONTEXT -- Always factor in the {lead_time_days}-day distributor lead time for restocking recommendations.",
