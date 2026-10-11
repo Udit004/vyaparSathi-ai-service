@@ -132,7 +132,7 @@ def get_checkpointer() -> AsyncMongoDBSaver:
 # Shutdown
 # ---------------------------------------------------------------------------
 
-def close_checkpointer() -> None:
+async def close_checkpointer() -> None:
     """
     Close the MongoDB resources used by the LangGraph checkpointer.
 
@@ -146,7 +146,7 @@ def close_checkpointer() -> None:
 
     if _async_client is not None:
         try:
-            _async_client.close()
+            await _async_client.close()
         except Exception as exc:  # pragma: no cover - best-effort close
             LOGGER.warning(
                 "checkpointer_close_failed",

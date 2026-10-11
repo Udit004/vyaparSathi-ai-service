@@ -184,9 +184,7 @@ async def lifespan(application: FastAPI):
         await close_redis()
 
         # Close LangGraph checkpointer MongoDB client.
-        #
-        # close_checkpointer() is synchronous.
-        close_checkpointer()
+        await close_checkpointer()
 
         logger.info(
             "application_shutdown_complete"
