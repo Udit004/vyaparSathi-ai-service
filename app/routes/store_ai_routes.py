@@ -258,7 +258,11 @@ async def _stream_graph_events(
             # --- Stream LLM tokens ---
             if kind == "on_chat_model_stream":
                 tags = event.get("tags", [])
-                if "hide_stream" in tags:
+                metadata = event.get("metadata", {}) or {}
+                node_name = metadata.get("langgraph_node")
+
+                # Suppress tokens from non-conversational nodes or hide_stream
+                if "hide_stream" in tags or (node_name and node_name not in {"think", "respond"}):
                     continue
 
                 msg_chunk = event["data"]["chunk"]
@@ -338,6 +342,42 @@ async def _stream_graph_events(
 
             elif kind == "on_chain_end" and name == "memory_query":
                 yield f"event: token\ndata: {json.dumps({'text': '\n_[Memory loaded.]_\n'})}\n\n"
+
+            # --- Planning node notifications & structured tool toggler ---
+            elif kind == "on_chain_start" and name == "planner":
+                yield f"event: token\ndata: {json.dumps({'text': '\n_[Formulating execution plan...]_\n'})}\n\n"
+
+            elif kind == "on_chain_end" and name == "planner":
+                plan_output = data.get("output", {})
+                if isinstance(plan_output, dict) and "plan" in plan_output:
+                    plan_data = plan_output["plan"]
+                    if isinstance(plan_data, dict):
+                        goal_text = plan_data.get("goal", "")
+                        steps_list = plan_data.get("steps", [])
+
+                        steps_dict = {}
+                        if isinstance(steps_list, list):
+                            for idx, step_item in enumerate(steps_list):
+                                clean_step = str(step_item).lstrip("0123456789. ")
+                                steps_dict[f"Step {idx + 1}"] = clean_step
+                        elif isinstance(steps_list, dict):
+                            steps_dict = steps_list
+                        else:
+                            steps_dict = {"Plan": str(steps_list)}
+
+                        plan_tool_payload = json.dumps(
+                            {
+                                "id": "tool-planner-plan",
+                                "name": "Goal & Strategy Plan",
+                                "args": {"Goal": goal_text} if goal_text else {},
+                                "result": steps_dict,
+                                "status": "completed",
+                            },
+                            default=_json_default,
+                        )
+                        tools_used_set.add("planner")
+                        yield f"event: tool_call\ndata: {plan_tool_payload}\n\n"
+                        yield f"event: token\ndata: {json.dumps({'text': '\n_[Plan ready.]_\n'})}\n\n"
 
             # --- Subgraph events ---
             elif kind == "on_chain_start" and name in {"morning_briefing", "deep_inventory", "smart_restock", "web_research", "document_generation"}:

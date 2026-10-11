@@ -68,7 +68,7 @@ async def planner_node(state: VyaparAgentState) -> Dict[str, Any]:
     ]
     
     try:
-        response = await llm.ainvoke(messages)
+        response = await llm.ainvoke(messages, config={"tags": ["hide_stream"]})
         content = response.content.strip()
         
         if content.startswith("```json"):
