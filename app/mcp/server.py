@@ -352,6 +352,50 @@ async def get_store_insights(store: str = "") -> List[Dict[str, Any]]:
 
 
 # ===========================================================================
+# 6. REGISTER ALL AGENT TOOLS (VYAPAR_TOOLS REGISTRY)
+# ===========================================================================
+
+class LangChainMCPToolAdapter:
+    """Adapts a LangChain StructuredTool into an MCP Tool for FastMCP."""
+
+    def __init__(self, lc_tool):
+        self.lc_tool = lc_tool
+        self.name = lc_tool.name
+        self.title = getattr(lc_tool, "name", None)
+        self.description = (lc_tool.description or "").strip()
+        schema = lc_tool.args_schema.model_json_schema() if getattr(lc_tool, "args_schema", None) else {}
+        if not schema or "type" not in schema:
+            schema = {"type": "object", "properties": {}}
+        self.parameters = schema
+        self.output_schema = None
+        self.annotations = None
+
+    async def run(self, arguments: dict, context=None, convert_result=False) -> Any:
+        args = dict(arguments or {})
+        target_store = _get_target_store("")
+
+        # Automatically inject target store if missing or empty in arguments
+        props = self.parameters.get("properties", {})
+        if "store_id" in props and not args.get("store_id"):
+            args["store_id"] = target_store
+        if "store" in props and not args.get("store"):
+            args["store"] = target_store
+
+        res = await self.lc_tool.ainvoke(args)
+        return _sanitize(res)
+
+
+try:
+    from app.agent.tools.registry import VYAPAR_TOOLS
+    for _lc_tool in VYAPAR_TOOLS:
+        if _lc_tool.name not in mcp._tool_manager._tools:
+            mcp._tool_manager._tools[_lc_tool.name] = LangChainMCPToolAdapter(_lc_tool)
+    LOGGER.info("all_vyapar_tools_registered_to_mcp", total_tools=len(mcp._tool_manager._tools))
+except Exception as _exc:
+    LOGGER.warning("failed_to_register_all_vyapar_tools", error=str(_exc))
+
+
+# ===========================================================================
 # Standalone CLI Runner (Stdio & SSE)
 # ===========================================================================
 
