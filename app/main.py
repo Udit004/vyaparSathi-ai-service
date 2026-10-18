@@ -206,12 +206,55 @@ def create_app() -> FastAPI:
     )
 
     # -----------------------------------------------------------------------
+    # CORS Middleware
+    # -----------------------------------------------------------------------
+    from fastapi.middleware.cors import CORSMiddleware
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # -----------------------------------------------------------------------
     # API Routes
     # -----------------------------------------------------------------------
 
     application.include_router(
         api_router
     )
+
+    # -----------------------------------------------------------------------
+    # MCP (Model Context Protocol) Server Mount & Endpoints
+    # -----------------------------------------------------------------------
+    from app.mcp import mcp
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    # Configure transport security to permit remote hosts and tunnels (like ngrok)
+    mcp_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    # Mount Starlette SSE app directly under /mcp (exposes /mcp/sse and /mcp/messages)
+    application.mount("/mcp", mcp.sse_app(transport_security=mcp_security))
+
+    @application.get("/mcp-info", tags=["mcp"])
+    async def mcp_status():
+        """Returns metadata and available read-only tools on the Vyapar Sathi MCP server."""
+        tools = await mcp.list_tools()
+        return {
+            "status": "online",
+            "server": "VyaparSathi-Assistant",
+            "mode": "read-only",
+            "sse_endpoint": "/mcp/sse",
+            "tool_count": len(tools),
+            "tools": [
+                {
+                    "name": t.name,
+                    "description": t.description.strip().splitlines()[0] if t.description else "",
+                }
+                for t in tools
+            ],
+        }
 
     # -----------------------------------------------------------------------
     # HTTP Logging Middleware
