@@ -155,18 +155,44 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
         try:
             call_res = await mcp.call_tool(tool_name, arguments)
             content_list = []
-            if hasattr(call_res, "content") and call_res.content:
-                for c in call_res.content:
-                    content_list.append({"type": getattr(c, "type", "text"), "text": getattr(c, "text", str(c))})
+
+            # FastMCP call_tool returns a tuple (list_of_blocks, meta_dict) or list of blocks
+            blocks = call_res
+            is_error = False
+            if isinstance(call_res, tuple):
+                if len(call_res) > 0:
+                    blocks = call_res[0]
+                if len(call_res) > 1 and isinstance(call_res[1], dict):
+                    is_error = call_res[1].get("is_error", False)
+            elif hasattr(call_res, "content"):
+                blocks = call_res.content
+                is_error = getattr(call_res, "is_error", False)
+
+            if isinstance(blocks, (list, tuple)):
+                for c in blocks:
+                    if hasattr(c, "text"):
+                        content_list.append({"type": getattr(c, "type", "text"), "text": c.text})
+                    elif isinstance(c, dict) and "text" in c:
+                        content_list.append(c)
+                    else:
+                        content_list.append({"type": "text", "text": str(c)})
+            elif hasattr(blocks, "text"):
+                content_list.append({"type": getattr(blocks, "type", "text"), "text": blocks.text})
+            elif isinstance(blocks, str):
+                content_list.append({"type": "text", "text": blocks})
             else:
-                content_list.append({"type": "text", "text": str(call_res)})
+                import json
+                try:
+                    content_list.append({"type": "text", "text": json.dumps(blocks, default=str)})
+                except Exception:
+                    content_list.append({"type": "text", "text": str(blocks)})
 
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "content": content_list,
-                    "isError": getattr(call_res, "is_error", False)
+                    "isError": is_error
                 }
             })
         except Exception as e:

@@ -120,6 +120,32 @@ async def list_available_stores(user_query: str = "") -> List[Dict[str, Any]]:
     return _sanitize(results)
 
 
+@mcp.tool()
+async def get_store_overview(store: str = "") -> Dict[str, Any]:
+    """
+    Get a comprehensive single-snapshot overview of the store's current business health:
+    Includes inventory stats (total items, inventory valuation, low stock items), recent sales revenue and order counts,
+    and outstanding customer khata dues.
+    Use this tool whenever the user asks 'tell me about my store', 'store information', 'how is my store doing', or 'store overview'.
+    Args:
+        store: Store name or ObjectId (leave blank to query the authenticated store)
+    """
+    target = _get_target_store(store)
+    inv = await fetch_inventory_summary(target)
+    sales = await fetch_sales_summary(target, days_lookback=30)
+    dues = await fetch_buyer_dues(target, min_due=1.0, limit=5)
+
+    return _sanitize({
+        "store": target,
+        "inventory_status": inv,
+        "sales_performance_30_days": sales,
+        "customer_khata_dues": {
+            "total_outstanding_amount": dues.get("total_due", 0),
+            "customers_with_dues_count": len(dues.get("buyers", [])),
+        },
+    })
+
+
 # ===========================================================================
 # 1. INVENTORY TOOLS (READ-ONLY)
 # ===========================================================================
