@@ -12,12 +12,83 @@ Supports:
 from typing import Any, Dict
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from bson import ObjectId
 import structlog
-from app.mcp.server import mcp
+from app.config.database import get_database
+from app.mcp.server import mcp, current_store_context
 
 LOGGER = structlog.get_logger("vyaparsathi.mcp.http")
 
+
+async def resolve_store_from_request(request: Request) -> str:
+    """
+    Resolve which store to query based on request parameters:
+    1. Query param `?store=...` or `?store_id=...`
+    2. Query param `?user=...` or `?email=...` (maps user email/name to their owned store in MongoDB)
+    3. Header `Authorization: Bearer <email_or_store>`
+    4. Custom headers `x-store-id` or `x-user-id`
+    """
+    db = get_database()
+
+    # Direct store query parameter
+    store_param = request.query_params.get("store") or request.query_params.get("store_id") or request.headers.get("x-store-id")
+    if store_param:
+        return store_param.strip()
+
+    # User identifier (email, user ID, or Bearer token)
+    user_param = (
+        request.query_params.get("user")
+        or request.query_params.get("email")
+        or request.headers.get("x-user-id")
+        or request.headers.get("x-user-email")
+    )
+
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth.replace("Bearer ", "").strip()
+        if token and not user_param:
+            user_param = token
+
+    if user_param:
+        cleaned_user = user_param.strip()
+        # 1. Try finding user by ObjectId or email or name
+        user = None
+        try:
+            user = await db["users"].find_one({"_id": ObjectId(cleaned_user)})
+        except Exception:
+            pass
+
+        if not user:
+            user = await db["users"].find_one({
+                "$or": [
+                    {"email": cleaned_user.lower()},
+                    {"name": {"$regex": f"^{cleaned_user}$", "$options": "i"}}
+                ]
+            })
+
+        if user:
+            store = await db["stores"].find_one({"owner": user["_id"]})
+            if store:
+                return str(store.get("name") or store["_id"])
+
+        # 2. Try directly matching store name
+        store = await db["stores"].find_one({"name": {"$regex": f"^{cleaned_user}$", "$options": "i"}})
+        if store:
+            return str(store.get("name") or store["_id"])
+
+    return ""
+
+
 async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
+    # Resolve store context from request query params / headers
+    try:
+        resolved_store = await resolve_store_from_request(request)
+        if resolved_store:
+            current_store_context.set(resolved_store)
+            LOGGER.info("resolved_tenant_store", store=resolved_store)
+    except Exception as exc:
+        LOGGER.warning("failed_to_resolve_tenant_store", error=str(exc))
+
     try:
         body = await request.json()
     except Exception:

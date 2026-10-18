@@ -59,16 +59,66 @@ def _sanitize(data: Any) -> Any:
     return data
 
 
+import contextvars
+from app.config.database import get_database
+
+# Per-request / Per-session store context (set via query param ?store=..., ?user=..., or header)
+current_store_context: contextvars.ContextVar[str] = contextvars.ContextVar("current_store_context", default="")
+
+
 def _get_target_store(store_id_or_name: Optional[str]) -> str:
-    """Returns the requested store identifier or falls back to the default store."""
+    """Returns the requested store identifier, or the session context store, or fallback."""
     cleaned = (store_id_or_name or "").strip()
-    return cleaned if cleaned else DEFAULT_STORE
+    if cleaned:
+        return cleaned
+    ctx = current_store_context.get("").strip()
+    if ctx:
+        return ctx
+    return DEFAULT_STORE
 
 
 # ---------------------------------------------------------------------------
 # Initialize MCP Server
 # ---------------------------------------------------------------------------
 mcp = MCPServer("VyaparSathi-Assistant")
+
+
+# ===========================================================================
+# 0. STORE DIRECTORY & CONTEXT DISCOVERY
+# ===========================================================================
+
+@mcp.tool()
+async def list_available_stores(user_query: str = "") -> List[Dict[str, Any]]:
+    """
+    List registered stores in Vyapar Sathi with their store names, IDs, and owners.
+    Useful when a user has multiple stores (e.g. 'Udit Kumar Tiwari', 'RAM JI STORE', 'udit store')
+    to determine which store they want to check.
+    Args:
+        user_query: Optional user name, email, or store name filter
+    """
+    db = get_database()
+    query: Dict[str, Any] = {}
+    if user_query:
+        query["name"] = {"$regex": user_query.strip(), "$options": "i"}
+
+    stores = await db["stores"].find(query, {"_id": 1, "name": 1, "owner": 1}).to_list(20)
+    user_ids = [s["owner"] for s in stores if s.get("owner")]
+    users = {}
+    if user_ids:
+        user_docs = await db["users"].find({"_id": {"$in": user_ids}}, {"_id": 1, "name": 1, "email": 1}).to_list(len(user_ids))
+        users = {str(u["_id"]): u for u in user_docs}
+
+    results = []
+    for s in stores:
+        owner_id = str(s.get("owner", ""))
+        u = users.get(owner_id, {})
+        results.append({
+            "store_id": str(s["_id"]),
+            "store_name": s.get("name", "Unnamed Store"),
+            "owner_name": u.get("name", ""),
+            "owner_email": u.get("email", ""),
+        })
+    return _sanitize(results)
 
 
 # ===========================================================================
