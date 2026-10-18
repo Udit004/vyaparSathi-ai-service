@@ -1,7 +1,7 @@
 # FastAPI backend runtime
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
-pydantic-settings==2.2.1
+pydantic-settings>=2.5.2
 python-dotenv==1.0.1
 
 # Database - versions resolved by langgraph-checkpoint-mongodb requirements
