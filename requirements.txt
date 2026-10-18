@@ -1,6 +1,7 @@
 # FastAPI backend runtime
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
+pydantic>=2.7.0,<2.14.0
 pydantic-settings>=2.5.2
 python-dotenv==1.0.1
 

@@ -238,7 +238,7 @@ def create_app() -> FastAPI:
     from mcp.server.transport_security import TransportSecuritySettings
 
     # Configure transport security to permit remote hosts and tunnels (like ngrok)
-    mcp_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
     # Direct JSON-RPC POST endpoints (used by ChatGPT and Streamable HTTP clients)
     @application.post("/mcp/sse", tags=["mcp"])
@@ -248,7 +248,7 @@ def create_app() -> FastAPI:
         return await handle_mcp_jsonrpc(request)
 
     # Mount Starlette SSE app directly under /mcp (handles GET /mcp/sse and /mcp/messages/)
-    application.mount("/mcp", mcp.sse_app(transport_security=mcp_security))
+    application.mount("/mcp", mcp.sse_app(mount_path="/mcp"))
 
     @application.get("/mcp-info", tags=["mcp"])
     async def mcp_status():

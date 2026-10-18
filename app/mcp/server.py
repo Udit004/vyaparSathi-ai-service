@@ -8,7 +8,6 @@ Supports:
 - Local stdio transport (Claude Desktop / Cursor / local CLI)
 - Remote HTTP SSE transport (ChatGPT / Web MCP clients / FastAPI mount)
 """
-from __future__ import annotations
 
 import os
 import sys
@@ -22,7 +21,7 @@ import structlog
 # Load environment configuration (.env)
 load_dotenv()
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 # Import core MongoDB read services
 from app.agent.service.inventory.summary import fetch_inventory_summary
@@ -80,7 +79,7 @@ def _get_target_store(store_id_or_name: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 # Initialize MCP Server
 # ---------------------------------------------------------------------------
-mcp = MCPServer("VyaparSathi-Assistant")
+mcp = FastMCP("VyaparSathi-Assistant")
 
 
 # ===========================================================================
