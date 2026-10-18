@@ -46,6 +46,15 @@ async def resolve_store_from_request(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         token = auth.replace("Bearer ", "").strip()
+        # 1. Check if token is an OAuth JWT token
+        from app.mcp.oauth import decode_access_token
+        jwt_claims = decode_access_token(token)
+        if jwt_claims:
+            target = jwt_claims.get("store_name") or jwt_claims.get("store_id")
+            if target:
+                LOGGER.info("authenticated_via_oauth_jwt", store=target, user=jwt_claims.get("email"))
+                return str(target)
+
         if token and not user_param:
             user_param = token
 

@@ -218,11 +218,16 @@ def create_app() -> FastAPI:
     )
 
     # -----------------------------------------------------------------------
-    # API Routes
+    # API Routes & OAuth 2.0 Router
     # -----------------------------------------------------------------------
 
     application.include_router(
         api_router
+    )
+
+    from app.mcp.oauth import oauth_router
+    application.include_router(
+        oauth_router
     )
 
     # -----------------------------------------------------------------------
