@@ -10,7 +10,7 @@ Supports:
 - tools/call
 """
 from typing import Any, Dict
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 import structlog
@@ -88,7 +88,7 @@ async def resolve_store_from_request(request: Request) -> str:
     return ""
 
 
-async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
+async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
     # Resolve store context from request query params / headers
     try:
         resolved_store = await resolve_store_from_request(request)
@@ -112,12 +112,13 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
 
     LOGGER.info("mcp_jsonrpc_request", method=method, req_id=req_id)
 
-    if method == "initialize":
+    if method in ("initialize", "server/discover"):
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
+                "supportedVersions": ["2024-11-05"],
                 "capabilities": {
                     "tools": {
                         "listChanged": False
@@ -133,7 +134,7 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
     elif method in ("notifications/initialized", "initialized"):
         if req_id is not None:
             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
-        return JSONResponse({}, status_code=204)
+        return Response(status_code=204)
 
     elif method == "ping":
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
