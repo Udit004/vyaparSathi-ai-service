@@ -678,24 +678,21 @@ async def oauth_token(request: Request):
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         try:
-            body = await request.json()
+            data = await request.json()
         except Exception:
-            body = {}
-        grant_type = body.get("grant_type", "authorization_code")
-        code = body.get("code", "")
-        client_id = body.get("client_id")
-        client_secret = body.get("client_secret")
-        redirect_uri = body.get("redirect_uri")
+            data = {}
     else:
         try:
             form = await request.form()
+            data = dict(form)
         except Exception:
-            form = {}
-        grant_type = form.get("grant_type", "authorization_code")
-        code = form.get("code", "")
-        client_id = form.get("client_id")
-        client_secret = form.get("client_secret")
-        redirect_uri = form.get("redirect_uri")
+            data = {}
+
+    grant_type = data.get("grant_type", "authorization_code")
+    code = data.get("code", "")
+    client_id = data.get("client_id")
+    client_secret = data.get("client_secret")
+    redirect_uri = data.get("redirect_uri")
 
     LOGGER.info("oauth_token_exchange_request", grant_type=grant_type, code=code[:8] if code else "")
 
@@ -746,7 +743,7 @@ async def oauth_token(request: Request):
         })
 
     elif grant_type == "refresh_token":
-        req_refresh = (form.get("refresh_token") if is_form else body.get("refresh_token")) or ""
+        req_refresh = data.get("refresh_token") or ""
         if not req_refresh:
             return JSONResponse({"error": "invalid_request", "error_description": "Missing refresh_token"}, status_code=400)
 

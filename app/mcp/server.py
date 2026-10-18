@@ -369,14 +369,17 @@ def main():
     args = parser.parse_args()
 
     print(f"[VyaparSathi MCP] Starting server with transport: {args.transport}", file=sys.stderr)
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     elif args.transport == "sse":
         print(f"[VyaparSathi MCP] Listening on http://{args.host}:{args.port}/sse", file=sys.stderr)
-        mcp.run(transport="sse", host=args.host, port=args.port)
+        mcp.run(transport="sse")
     elif args.transport == "streamable-http":
         print(f"[VyaparSathi MCP] Listening on http://{args.host}:{args.port}/mcp", file=sys.stderr)
-        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
