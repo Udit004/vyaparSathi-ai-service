@@ -248,8 +248,10 @@ def create_app() -> FastAPI:
         """Handle incoming MCP JSON-RPC protocol requests from ChatGPT or Web MCP clients."""
         return await handle_mcp_jsonrpc(request)
 
-    # Mount Starlette SSE app directly under /mcp (handles GET /mcp/sse and /mcp/messages/)
-    application.mount("/mcp", mcp.sse_app(mount_path="/mcp"))
+    # Mount Starlette SSE app directly under /mcp (handles GET /mcp/sse and POST /mcp/messages/)
+    # Note: Do NOT pass mount_path="/mcp" to sse_app() because Starlette's mount already prefixes /mcp,
+    # which would otherwise cause duplicate '/mcp/mcp/messages/' resulting in 404 on action discovery.
+    application.mount("/mcp", mcp.sse_app())
 
     @application.get("/mcp", tags=["mcp"])
     @application.get("/mcp-info", tags=["mcp"])
