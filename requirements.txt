@@ -54,5 +54,5 @@ bullmq>=0.9.0
 websockets
 
 # Model Context Protocol (MCP) & OAuth
-mcp>=1.2.0
+mcp>=1.2.0,<2
 PyJWT>=2.8.0
