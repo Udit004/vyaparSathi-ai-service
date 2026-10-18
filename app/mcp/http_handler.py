@@ -88,37 +88,22 @@ async def resolve_store_from_request(request: Request) -> str:
     return ""
 
 
-async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
-    # Resolve store context from request query params / headers
-    try:
-        resolved_store = await resolve_store_from_request(request)
-        if resolved_store:
-            current_store_context.set(resolved_store)
-            LOGGER.info("resolved_tenant_store", store=resolved_store)
-    except Exception as exc:
-        LOGGER.warning("failed_to_resolve_tenant_store", error=str(exc))
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse(
-            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
-            status_code=400,
-        )
-
-    method = body.get("method")
-    req_id = body.get("id")
-    params = body.get("params", {})
+async def _process_single_rpc(req_obj: Dict[str, Any]) -> Dict[str, Any] | Response:
+    """Process a single JSON-RPC request dictionary."""
+    method = req_obj.get("method")
+    req_id = req_obj.get("id")
+    params = req_obj.get("params", {}) or {}
 
     LOGGER.info("mcp_jsonrpc_request", method=method, req_id=req_id)
 
     if method in ("initialize", "server/discover"):
-        return JSONResponse({
+        return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
+                "resultType": "complete",
                 "protocolVersion": "2024-11-05",
-                "supportedVersions": ["2024-11-05"],
+                "supportedVersions": ["2026-07-28", "2025-11-25", "2024-11-05"],
                 "capabilities": {
                     "tools": {
                         "listChanged": False
@@ -127,17 +112,23 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
                 "serverInfo": {
                     "name": "VyaparSathi-Assistant",
                     "version": "1.0.0"
+                },
+                "_meta": {
+                    "io.modelcontextprotocol/serverInfo": {
+                        "name": "VyaparSathi-Assistant",
+                        "version": "1.0.0"
+                    }
                 }
             }
-        })
+        }
 
     elif method in ("notifications/initialized", "initialized"):
         if req_id is not None:
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
+            return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         return Response(status_code=204)
 
     elif method == "ping":
-        return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 
     elif method == "tools/list":
         tools = await mcp.list_tools()
@@ -153,13 +144,13 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
                 "description": (t.description or "").strip(),
                 "inputSchema": schema,
             })
-        return JSONResponse({
+        return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
                 "tools": tools_dict
             }
-        })
+        }
 
     elif method == "tools/call":
         tool_name = params.get("name")
@@ -199,30 +190,92 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
                 except Exception:
                     content_list.append({"type": "text", "text": str(blocks)})
 
-            return JSONResponse({
+            return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "content": content_list,
                     "isError": is_error
                 }
-            })
+            }
         except Exception as e:
             LOGGER.exception("tool_call_failed", tool=tool_name, error=str(e))
-            return JSONResponse({
+            return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "content": [{"type": "text", "text": f"Error executing tool: {str(e)}"}],
                     "isError": True
                 }
-            })
+            }
 
-    return JSONResponse({
+    return {
         "jsonrpc": "2.0",
         "id": req_id,
         "error": {
             "code": -32601,
             "message": f"Method '{method}' not found"
         }
-    })
+    }
+
+
+async def handle_mcp_jsonrpc(request: Request) -> JSONResponse | Response:
+    import json
+
+    # Resolve store context from request query params / headers
+    try:
+        resolved_store = await resolve_store_from_request(request)
+        if resolved_store:
+            current_store_context.set(resolved_store)
+            LOGGER.info("resolved_tenant_store", store=resolved_store)
+    except Exception as exc:
+        LOGGER.warning("failed_to_resolve_tenant_store", error=str(exc))
+
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "")
+
+    # Diagnostic logging for incoming MCP requests
+    LOGGER.info(
+        "incoming_mcp_request",
+        method=request.method,
+        path=request.url.path,
+        content_type=content_type,
+        body_length=len(raw_body),
+        body_preview=raw_body[:300].decode("utf-8", errors="replace"),
+    )
+
+    # Handle empty body probes (e.g., connection tests / health checks) gracefully
+    if not raw_body or not raw_body.strip():
+        LOGGER.info("empty_mcp_body_probe_handled")
+        return JSONResponse({"jsonrpc": "2.0", "result": {"status": "connected"}})
+
+    try:
+        body = json.loads(raw_body.decode("utf-8"))
+    except Exception as exc:
+        LOGGER.warning("mcp_json_parse_failed", error=str(exc), raw=raw_body[:200].decode("utf-8", errors="replace"))
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {str(exc)}"}},
+            status_code=400,
+        )
+
+    # Support JSON-RPC 2.0 batch requests (arrays of requests)
+    if isinstance(body, list):
+        responses = []
+        for item in body:
+            if isinstance(item, dict):
+                res = await _process_single_rpc(item)
+                if isinstance(res, Response):
+                    continue  # Notifications with 204 produce no response in batches
+                responses.append(res)
+        return JSONResponse(responses)
+
+    if isinstance(body, dict):
+        res = await _process_single_rpc(body)
+        if isinstance(res, Response):
+            return res
+        return JSONResponse(res)
+
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: expected object or array"}},
+        status_code=400,
+    )
