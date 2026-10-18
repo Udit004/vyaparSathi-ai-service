@@ -240,9 +240,10 @@ def create_app() -> FastAPI:
     # Configure transport security to permit remote hosts and tunnels (like ngrok)
     mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
-    # Direct JSON-RPC POST endpoints (used by ChatGPT and Streamable HTTP clients)
+    # Direct JSON-RPC POST endpoints (used by ChatGPT, Claude, and Streamable HTTP clients)
     @application.post("/mcp/sse", tags=["mcp"])
     @application.post("/mcp", tags=["mcp"])
+    @application.post("/sse", tags=["mcp"])
     async def mcp_post_jsonrpc(request: Request):
         """Handle incoming MCP JSON-RPC protocol requests from ChatGPT or Web MCP clients."""
         return await handle_mcp_jsonrpc(request)
@@ -250,6 +251,7 @@ def create_app() -> FastAPI:
     # Mount Starlette SSE app directly under /mcp (handles GET /mcp/sse and /mcp/messages/)
     application.mount("/mcp", mcp.sse_app(mount_path="/mcp"))
 
+    @application.get("/mcp", tags=["mcp"])
     @application.get("/mcp-info", tags=["mcp"])
     async def mcp_status():
         """Returns metadata and available read-only tools on the Vyapar Sathi MCP server."""

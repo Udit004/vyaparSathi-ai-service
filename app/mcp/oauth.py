@@ -699,41 +699,85 @@ async def oauth_token(request: Request):
 
     LOGGER.info("oauth_token_exchange_request", grant_type=grant_type, code=code[:8] if code else "")
 
-    if grant_type != "authorization_code":
-        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+    if grant_type == "authorization_code":
+        auth_entry = AUTH_CODES.get(code)
+        if not auth_entry:
+            return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired authorization code"}, status_code=400)
 
-    auth_entry = AUTH_CODES.get(code)
-    if not auth_entry:
-        return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired authorization code"}, status_code=400)
+        if time.time() > auth_entry["expires_at"]:
+            AUTH_CODES.pop(code, None)
+            return JSONResponse({"error": "invalid_grant", "error_description": "Authorization code expired"}, status_code=400)
 
-    if time.time() > auth_entry["expires_at"]:
+        # Consume the one-time code
         AUTH_CODES.pop(code, None)
-        return JSONResponse({"error": "invalid_grant", "error_description": "Authorization code expired"}, status_code=400)
 
-    # Consume the one-time code
-    AUTH_CODES.pop(code, None)
+        now = int(time.time())
+        payload = {
+            "sub": auth_entry["user_id"],
+            "email": auth_entry["email"],
+            "store_id": auth_entry["store_id"],
+            "store_name": auth_entry["store_name"],
+            "type": "access",
+            "iss": "vyaparsathi",
+            "iat": now,
+            "exp": now + (30 * 24 * 3600),
+        }
+        refresh_payload = {
+            "sub": auth_entry["user_id"],
+            "email": auth_entry["email"],
+            "store_id": auth_entry["store_id"],
+            "store_name": auth_entry["store_name"],
+            "type": "refresh",
+            "iss": "vyaparsathi",
+            "iat": now,
+            "exp": now + (90 * 24 * 3600),
+        }
 
-    # Generate signed JWT token valid for 30 days
-    now = int(time.time())
-    payload = {
-        "sub": auth_entry["user_id"],
-        "email": auth_entry["email"],
-        "store_id": auth_entry["store_id"],
-        "store_name": auth_entry["store_name"],
-        "iss": "vyaparsathi",
-        "iat": now,
-        "exp": now + (30 * 24 * 3600),
-    }
+        access_token = jwt.encode(payload, OAUTH_JWT_SECRET, algorithm="HS256")
+        refresh_token = jwt.encode(refresh_payload, OAUTH_JWT_SECRET, algorithm="HS256")
+        LOGGER.info("oauth_access_token_issued", user=auth_entry["email"], store=auth_entry["store_name"])
 
-    access_token = jwt.encode(payload, OAUTH_JWT_SECRET, algorithm="HS256")
-    LOGGER.info("oauth_access_token_issued", user=auth_entry["email"], store=auth_entry["store_name"])
+        return JSONResponse({
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 30 * 24 * 3600,
+            "refresh_token": refresh_token,
+            "scope": "store:read",
+        })
 
-    return JSONResponse({
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": 30 * 24 * 3600,
-        "scope": "store:read",
-    })
+    elif grant_type == "refresh_token":
+        req_refresh = (form.get("refresh_token") if is_form else body.get("refresh_token")) or ""
+        if not req_refresh:
+            return JSONResponse({"error": "invalid_request", "error_description": "Missing refresh_token"}, status_code=400)
+
+        claims = decode_access_token(req_refresh)
+        if not claims or claims.get("type") != "refresh":
+            return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired refresh token"}, status_code=400)
+
+        now = int(time.time())
+        new_payload = {
+            "sub": claims["sub"],
+            "email": claims["email"],
+            "store_id": claims["store_id"],
+            "store_name": claims["store_name"],
+            "type": "access",
+            "iss": "vyaparsathi",
+            "iat": now,
+            "exp": now + (30 * 24 * 3600),
+        }
+        new_access_token = jwt.encode(new_payload, OAUTH_JWT_SECRET, algorithm="HS256")
+        LOGGER.info("oauth_token_refreshed", user=claims["email"], store=claims["store_name"])
+
+        return JSONResponse({
+            "access_token": new_access_token,
+            "token_type": "Bearer",
+            "expires_in": 30 * 24 * 3600,
+            "refresh_token": req_refresh,
+            "scope": "store:read",
+        })
+
+    else:
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:

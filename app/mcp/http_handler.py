@@ -140,7 +140,18 @@ async def handle_mcp_jsonrpc(request: Request) -> JSONResponse:
 
     elif method == "tools/list":
         tools = await mcp.list_tools()
-        tools_dict = [t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools]
+        tools_dict = []
+        for t in tools:
+            schema = t.inputSchema.model_dump() if hasattr(t.inputSchema, "model_dump") else t.inputSchema
+            if not isinstance(schema, dict):
+                schema = {"type": "object", "properties": {}}
+            if "type" not in schema:
+                schema["type"] = "object"
+            tools_dict.append({
+                "name": t.name,
+                "description": (t.description or "").strip(),
+                "inputSchema": schema,
+            })
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": req_id,
