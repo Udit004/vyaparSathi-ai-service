@@ -257,75 +257,50 @@ def create_app() -> FastAPI:
         }
 
     # -----------------------------------------------------------------------
-    # HTTP Logging Middleware
+    # Pure ASGI HTTP Logging Middleware (compatible with SSE streaming)
     # -----------------------------------------------------------------------
+    class ASGILoggingMiddleware:
+        def __init__(self, app):
+            self.app = app
 
-    @application.middleware("http")
-    async def log_requests(
-        request: Request,
-        call_next,
-    ):
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                return await self.app(scope, receive, send)
 
-        start_time = time.time()
+            path = scope.get("path", "")
+            method = scope.get("method", "GET")
 
-        logger = structlog.get_logger(
-            "vyaparsathi.ai.http"
-        )
+            # SSE streams (/mcp/sse) stay open continuously; pass directly through without buffering
+            if path.startswith("/mcp"):
+                return await self.app(scope, receive, send)
 
-        logger.info(
-            "http_request_start",
-            method=request.method,
-            path=request.url.path,
-            query_params=dict(
-                request.query_params
-            ),
-            client_host=(
-                request.client.host
-                if request.client
-                else None
-            ),
-        )
+            start_time = time.time()
+            logger = structlog.get_logger("vyaparsathi.ai.http")
+            logger.info("http_request_start", method=method, path=path)
 
-        try:
+            status_code = [200]
 
-            response = await call_next(
-                request
-            )
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    status_code[0] = message.get("status", 200)
+                await send(message)
 
-        except Exception:
+            try:
+                await self.app(scope, receive, send_wrapper)
+                duration_ms = round((time.time() - start_time) * 1000, 2)
+                logger.info(
+                    "http_request_complete",
+                    method=method,
+                    path=path,
+                    status_code=status_code[0],
+                    duration_ms=duration_ms,
+                )
+            except Exception:
+                duration_ms = round((time.time() - start_time) * 1000, 2)
+                logger.exception("http_request_failed", method=method, path=path, duration_ms=duration_ms)
+                raise
 
-            process_time = (
-                time.time() - start_time
-            ) * 1000
-
-            logger.exception(
-                "http_request_failed",
-                method=request.method,
-                path=request.url.path,
-                duration_ms=round(
-                    process_time,
-                    2,
-                ),
-            )
-
-            raise
-
-        process_time = (
-            time.time() - start_time
-        ) * 1000
-
-        logger.info(
-            "http_request_complete",
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            duration_ms=round(
-                process_time,
-                2,
-            ),
-        )
-
-        return response
+    application.add_middleware(ASGILoggingMiddleware)
 
     # -----------------------------------------------------------------------
     # Prometheus Metrics
