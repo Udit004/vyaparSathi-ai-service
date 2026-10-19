@@ -679,6 +679,7 @@ class CopilotStreamPayload(BaseModel):
     chat_id: str | None = None
     # Legacy field kept for backwards compatibility; ignored if chat_id is provided.
     session_id: str | None = None
+    language: str | None = "en"
 
 
 @router.post("/{store_id}/copilot/stream")
@@ -747,6 +748,11 @@ async def get_copilot_stream(store_id: str, payload: CopilotStreamPayload, reque
                 user_prompt=payload.message,
                 thread_id=thread_id,
             )
+            if payload.language:
+                initial_state["user_preferences"] = {
+                    **(initial_state.get("user_preferences") or {}),
+                    "language": payload.language,
+                }
 
             config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 100}
 

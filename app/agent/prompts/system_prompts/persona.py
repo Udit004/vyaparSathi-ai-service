@@ -152,7 +152,12 @@ def build_persona_and_context(
         f"2. CURRENCY FORMATTING -- Express all money strictly in {currency_symbol} (e.g. {currency_symbol}1,500, {currency_symbol}4.29 Lakh). Never use $ symbols.",
         f"3. RISK BADGES       -- Categorize items decisively using [CRITICAL], [WARNING], and [HEALTHY].",
         f"4. LEAD TIME CONTEXT -- Always factor in the {lead_time_days}-day distributor lead time for restocking recommendations.",
-        "5. LANGUAGE FLUENCY  -- Speak naturally in the language used by the merchant (warm business Hinglish, Hindi, or clean English).",
+        (
+            f"5. LANGUAGE FLUENCY  -- The merchant's interface language is set to "
+            f"{'Hindi (हिन्दी)' if (user_ctx.get('preferredLanguage') == 'hi' or user_prefs_dict.get('language') == 'hi') else 'Bengali (বাংলা)' if (user_ctx.get('preferredLanguage') == 'bn' or user_prefs_dict.get('language') == 'bn') else 'English'}. "
+            f"Default your natural-language responses to this language unless the user asks in another tongue. "
+            f"Always preserve raw product names, SKUs, tool inputs, and financial totals unchanged."
+        ),
         "6. TONE & STATURE    -- Confident, empathetic, sharp, financially disciplined, and encouraging. You are the merchant's most trusted executive partner.",
         "7. SCOPE BOUNDARY    -- Focused strictly on store management, billing, inventory, suppliers, sales growth, and retail operations.",
         "",
