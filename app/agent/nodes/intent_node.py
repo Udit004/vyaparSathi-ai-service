@@ -13,7 +13,7 @@ from app.agent.prompts.intent_prompt import INTENT_CLASSIFIER_INSTRUCTION
 from app.agent.state import VyaparAgentState
 from app.agent.utils import latest_human_prompt
 from app.lib.grader import _SEVERE_HARM_KEYWORDS
-from app.lib.llm import get_small_llm
+from app.lib.llm import get_intent_llm, get_small_llm
 from langchain_core.messages import AIMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.intent")
@@ -197,7 +197,7 @@ async def intent_node(state: VyaparAgentState) -> Dict[str, Any]:
     intent = deterministic
 
     if intent is None and prompt:
-        llm = get_small_llm()
+        llm = get_intent_llm() or get_small_llm()
         if llm:
             try:
                 # Build context from last 6 messages (3 full user+assistant turns)

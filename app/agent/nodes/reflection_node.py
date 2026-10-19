@@ -8,7 +8,7 @@ from typing import Dict, Any
 import structlog
 
 from app.agent.state import VyaparAgentState
-from app.lib.llm import get_small_llm
+from app.lib.llm import get_critic_llm, get_small_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.reflection")
@@ -22,9 +22,8 @@ async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
         LOGGER.info("reflection_node_max_reached", reflection_count=reflection_count)
         return {"goal_status": "complete"}  # Accept the best answer we have
 
-    # Use a fast/small model — reflection just needs to suggest which tools
-    # to call next, not do heavy reasoning. This saves ~12s vs using Claude.
-    llm = get_small_llm()
+    # Use evaluation model (Groq 120B/20B) — does not consume Gemini quotas
+    llm = get_critic_llm() or get_small_llm()
     if not llm:
         return {"goal_status": "complete"}
         
@@ -67,7 +66,7 @@ async def reflection_node(state: VyaparAgentState) -> Dict[str, Any]:
         LOGGER.error("reflection_node_error", error=str(e))
         return {"goal_status": "complete"} # Fail open
         
-    LOGGER.info("reflection_node_result", reflection=reflection_text)
+    LOGGER.info("reflection_node_result", reflection_len=len(reflection_text))
     
     # Add the reflection back into the conversation history so think_node sees it
     reflection_msg = HumanMessage(content=f"Evaluation failed.\nCritic says: {reason}\nReflection for next step: {reflection_text}")

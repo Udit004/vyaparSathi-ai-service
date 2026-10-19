@@ -147,9 +147,18 @@ async def lifespan(application: FastAPI):
     # Pre-warm LLM chains to eliminate cold-start delay on first requests
     # -----------------------------------------------------------------------
     try:
-        from app.lib.llm import get_llm, get_small_llm
-        get_llm()
+        from app.lib.llm import (
+            get_reasoning_llm,
+            get_intent_llm,
+            get_critic_llm,
+            get_small_llm,
+            get_safeguard_llm,
+        )
+        get_reasoning_llm()
+        get_intent_llm()
+        get_critic_llm()
         get_small_llm()
+        get_safeguard_llm()
         logger.info("llm_chains_prewarmed")
     except Exception as exc:
         logger.warning("llm_prewarm_failed", error=str(exc))

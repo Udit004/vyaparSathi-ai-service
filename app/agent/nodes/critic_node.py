@@ -10,7 +10,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from app.agent.state import VyaparAgentState
-from app.lib.llm import get_small_llm
+from app.lib.llm import get_critic_llm, get_small_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 LOGGER = structlog.get_logger("vyaparsathi.ai.agent.critic")
@@ -22,9 +22,8 @@ class CriticResult(BaseModel):
     needs_retry: bool = Field(description="True if the agent should retry to get the missing information.")
 
 async def critic_node(state: VyaparAgentState) -> Dict[str, Any]:
-    # Use a fast/small model — critic just needs pass/fail evaluation,
-    # not heavy reasoning. This saves 5-10s vs using the main Claude model.
-    llm = get_small_llm()
+    # Use dedicated evaluation model (Groq 120B/20B) — leaves Gemini quota for main thinking
+    llm = get_critic_llm() or get_small_llm()
     if not llm:
         return {"goal_status": "complete"}
     

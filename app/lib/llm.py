@@ -1,18 +1,37 @@
 """
 app/lib/llm.py
 ==============
-LLM factory with automatic provider and multi-key fallback.
+Multi-Tier LLM factory with role-based model grouping, automatic fallback,
+and multi-key rotation to eliminate rate limit bottlenecks across LangGraph nodes.
 
-Provides a unified LLM interface with multi-provider, multi-key fallback ordering:
-    1. Gemini models (gemini-2.5-flash)
-    2. Groq models (llama-3.3-70b-versatile, llama-3.1-8b-instant)
-    3. OpenRouter free models (meta-llama/llama-3.3-70b-instruct:free, google/gemma-2-9b-it:free)
-    4. NVIDIA NIM models (nvidia/llama-3.1-8b-instruct)
-    5. Ollama local models (if OLLAMA_BASE_URL is configured or running locally)
+Architecture & Tier Strategy
+----------------------------
+1. Reasoning / Strategic Tier (`get_reasoning_llm` / `get_llm` / `get_planner_llm`):
+   - Used by: `think_node`, `planner_node`, and strategic synthesis.
+   - Primary: Gemini Flash (`gemini-2.5-flash`, `gemini-2.5-flash-lite`) across all configured keys.
+   - Resilient Fallback: Groq 120B (`openai/gpt-oss-120b`), NVIDIA Llama 90B/11B, OpenRouter, Ollama.
+   - If Gemini hits 429/TPM limits, switches automatically to Groq 120B / NVIDIA so execution never breaks.
 
-The returned ``_FallbackLLM`` object behaves like a single chat model:
-``ainvoke``, ``invoke``, ``bind_tools``, ``with_structured_output``, and ``with_config``
-all work transparently across every member in the fallback chain.
+2. Intent Routing Tier (`get_intent_llm`):
+   - Used by: `intent_node`.
+   - Primary: Gemini Flash Lite (`gemini-2.5-flash-lite`, low-token footprint) or Gemini Flash.
+   - Fast Fallback: Groq 20B (`openai/gpt-oss-20b`), Groq Qwen 27B, NVIDIA 11B, OpenRouter.
+
+3. Evaluation & Critic Tier (`get_critic_llm` / `get_evaluation_llm`):
+   - Used by: `critic_node`, `reflection_node`.
+   - Non-Gemini Primary: Groq 120B (`openai/gpt-oss-120b`), Groq 20B (`openai/gpt-oss-20b`),
+     Groq Qwen 27B, NVIDIA 11B, OpenRouter, Ollama.
+   - Tail Emergency Fallback ONLY: Gemini Flash Lite (only invoked if all non-Gemini providers fail).
+
+4. Fast Auxiliary & Memory Tier (`get_small_llm` / `get_fast_llm` / `get_memory_llm`):
+   - Used by: Memory extraction, retrieval reranking, conflict resolution, summarization, subgraphs.
+   - Non-Gemini Primary: Groq 20B (`openai/gpt-oss-20b`), Groq Qwen 27B, NVIDIA 11B, OpenRouter, Ollama.
+   - Tail Emergency Fallback ONLY: Gemini Flash Lite.
+
+5. Guardrail & Safeguard Tier (`get_safeguard_llm`):
+   - Used by: `grader_node` (safety & harm screening).
+   - Dedicated Non-Gemini Primary: Groq Safeguard 20B (`openai/gpt-oss-safeguard-20b`), Groq 20B, NVIDIA Guard.
+   - Tail Emergency Fallback ONLY: Gemini Flash Lite.
 """
 
 from __future__ import annotations
@@ -45,9 +64,7 @@ def _build_gemini(model: str, *, api_key: str | None = None, **kwargs) -> Any:
 
 
 def _build_openai(model: str, *, base_url: str, api_key: str, default_headers: dict | None = None) -> Any:
-    """
-    Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint.
-    """
+    """Build a ChatOpenAI instance pointed at an OpenAI-compatible endpoint."""
     from langchain_openai import ChatOpenAI
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -70,7 +87,7 @@ def _build_ollama(model: str, *, base_url: str = "http://localhost:11434/v1", ap
 
 
 # ---------------------------------------------------------------------------
-# Provider definitions
+# Provider Definitions by Architectural Group
 # ---------------------------------------------------------------------------
 
 _OPENAI_BASE_URL = {
@@ -79,39 +96,88 @@ _OPENAI_BASE_URL = {
     "openrouter": "https://openrouter.ai/api/v1",
 }
 
-# Providers prioritized for Complex Reasoning, Planning, Synthesis, and Main Thinking Nodes
-_LARGE_PROVIDERS = [
+# 1. Reasoning & Strategic Thinking (think_node, planner_node)
+_REASONING_PROVIDERS = [
     ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
     ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
-    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("groq", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("nvidia", "meta/llama-3.2-90b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
     ("ollama", "llama3", _build_ollama, "OLLAMA"),
 ]
 
-# Providers prioritized for Fast/Lightweight tasks: Memory extraction, retrieval, summarization, intent routing, planner
+# Legacy alias for backward compatibility
+_LARGE_PROVIDERS = _REASONING_PROVIDERS
+
+# 2. Intent Routing (intent_node)
+_INTENT_PROVIDERS = [
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
+    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
+    ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("ollama", "llama3", _build_ollama, "OLLAMA"),
+]
+
+# 3. Critic & Reflection Evaluation (critic_node, reflection_node)
+# Non-Gemini primary (Groq 120B / 20B / Qwen / NVIDIA) to conserve Gemini rate limits
+_CRITIC_PROVIDERS = [
+    ("groq", "openai/gpt-oss-120b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("nvidia", "mistralai/mistral-large-2-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("ollama", "llama3", _build_ollama, "OLLAMA"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),  # Emergency tail fallback
+]
+
+# 4. Fast Auxiliary & Memory (memory extraction, retrieval rerank, conflict resolution, summarizer)
+# Non-Gemini primary: Groq 20B (ultra fast), Groq Qwen 27B, NVIDIA 11B
 _SMALL_PROVIDERS = [
     ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
     ("groq", "qwen/qwen3.8-27b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
-    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
     ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
-    ("gemini", "gemini-2.5-flash", _build_gemini, "GEMINI"),
+    ("openrouter", "google/gemma-2-9b-it:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("ollama", "llama3", _build_ollama, "OLLAMA"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),  # Emergency tail fallback
 ]
 
+# 5. Guardrail / Safeguard (grader_node)
+# Non-Gemini primary: Groq Safeguard 20B, Groq 20B, NVIDIA Guard
 _SAFEGUARD_PROVIDERS = [
-    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),
     ("groq", "openai/gpt-oss-safeguard-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("groq", "openai/gpt-oss-20b", partial(_build_openai, base_url=_OPENAI_BASE_URL["groq"]), "GROQ"),
+    ("nvidia", "meta/llama-guard-4-12b", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
     ("nvidia", "meta/llama-3.2-11b-vision-instruct", partial(_build_openai, base_url=_OPENAI_BASE_URL["nvidia"]), "NVIDIA"),
+    ("openrouter", "google/gemma-2-9b-it:free", partial(_build_openai, base_url=_OPENAI_BASE_URL["openrouter"]), "OPENROUTER"),
+    ("gemini", "gemini-2.5-flash-lite", _build_gemini, "GEMINI"),  # Emergency tail fallback
 ]
 
 
 # ---------------------------------------------------------------------------
-# Fallback chain
+# Fallback Chain with Automatic Cooldown
 # ---------------------------------------------------------------------------
 
-# Cooldown registry for rate-limited (429 / RESOURCE_EXHAUSTED) providers
 _PROVIDER_COOLDOWNS: dict[str, float] = {}
-_COOLDOWN_SECONDS = 30.0
+_COOLDOWN_SECONDS = 45.0
+
+_RATE_LIMIT_KEYWORDS = (
+    "429",
+    "resource_exhausted",
+    "quota",
+    "rate_limit",
+    "rate_limit_exceeded",
+    "tpm",
+    "tokens per minute",
+    "too many requests",
+    "overloaded",
+    "413",
+    "503",
+    "service unavailable",
+)
 
 
 class _FallbackLLM:
@@ -120,7 +186,7 @@ class _FallbackLLM:
 
     Initializes members lazily: only the primary provider is constructed upfront.
     Fallback members are initialized on-demand if the primary fails.
-    Rate-limited providers (429 / RESOURCE_EXHAUSTED / TPM limits) are put on a cooldown
+    Rate-limited providers (429 / RESOURCE_EXHAUSTED / TPM limits) are put on cooldown
     to avoid burning latency on known-exhausted keys.
     """
 
@@ -162,7 +228,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
+                if any(k in err_msg for k in _RATE_LIMIT_KEYWORDS):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 LOGGER.warning(
@@ -194,7 +260,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
+                if any(k in err_msg for k in _RATE_LIMIT_KEYWORDS):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
@@ -213,6 +279,40 @@ class _FallbackLLM:
         if last_error is not None:
             raise last_error
         raise RuntimeError(f"All LLM providers ({self._names}) failed to invoke.")
+
+    def stream(self, input, config=None, **kwargs):
+        now = time.time()
+        valid_indices = [idx for idx, name in enumerate(self._names) if _PROVIDER_COOLDOWNS.get(name, 0) <= now]
+        if not valid_indices:
+            LOGGER.warning("llm_all_providers_on_cooldown_resetting", providers=self._names)
+            for name in self._names:
+                _PROVIDER_COOLDOWNS.pop(name, None)
+            valid_indices = list(range(len(self._names)))
+
+        last_error = None
+        for idx in valid_indices:
+            name = self._names[idx]
+            try:
+                member = self._get_member(idx)
+                LOGGER.debug("llm_fallback_try_stream", provider=name)
+                for chunk in member.stream(input, config=config, **kwargs):
+                    yield chunk
+                return
+            except Exception as exc:
+                last_error = exc
+                err_msg = str(exc).lower()
+                if any(k in err_msg for k in _RATE_LIMIT_KEYWORDS):
+                    _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
+                    LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
+                LOGGER.warning(
+                    "llm_fallback_member_failed",
+                    provider=name,
+                    error=str(exc)[:200],
+                )
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"All LLM providers ({self._names}) failed to stream.")
 
     async def astream(self, input, config=None, **kwargs):
         now = time.time()
@@ -235,7 +335,7 @@ class _FallbackLLM:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc).lower()
-                if any(k in err_msg for k in ("429", "resource_exhausted", "quota", "rate_limit", "tpm", "tokens per minute")):
+                if any(k in err_msg for k in _RATE_LIMIT_KEYWORDS):
                     _PROVIDER_COOLDOWNS[name] = time.time() + _COOLDOWN_SECONDS
                     LOGGER.warning("llm_provider_cooldown_set", provider=name, cooldown_s=_COOLDOWN_SECONDS)
                 if "event loop" in err_msg or "closed" in err_msg:
@@ -330,11 +430,12 @@ class _FallbackLLM:
 
 
 # ---------------------------------------------------------------------------
-# Internal builder helper
+# Internal Builder Helper & Module Caches
 # ---------------------------------------------------------------------------
 
-# Module-level cache so the chain is built once per process, not on every call.
-_llm_cache: _FallbackLLM | None = None
+_reasoning_llm_cache: _FallbackLLM | None = None
+_intent_llm_cache: _FallbackLLM | None = None
+_critic_llm_cache: _FallbackLLM | None = None
 _small_llm_cache: _FallbackLLM | None = None
 _safeguard_llm_cache: _FallbackLLM | None = None
 
@@ -383,122 +484,167 @@ def _build_chain(provider_list: list) -> _FallbackLLM | None:
     return _FallbackLLM(members, names, builders)
 
 
-def get_llm() -> _FallbackLLM | None:
-    """
-    Return the primary fallback LLM chain for complex reasoning, planning,
-    and synthesis tasks.
+# ---------------------------------------------------------------------------
+# Public Group Factory Functions
+# ---------------------------------------------------------------------------
 
-    Builds the ``_FallbackLLM`` once and caches it at module level.
-    Returns ``None`` when no provider key is configured.
+def get_reasoning_llm() -> _FallbackLLM | None:
     """
-    global _llm_cache
-    if _llm_cache is not None:
-        return _llm_cache
-    chain = _build_chain(_LARGE_PROVIDERS)
+    Return the fallback LLM chain for complex reasoning, strategic planning,
+    and tool synthesis (`think_node`, `planner_node`).
+
+    Prioritizes Gemini Flash models, falling back to Groq 120B, NVIDIA, OpenRouter, and Ollama.
+    """
+    global _reasoning_llm_cache
+    if _reasoning_llm_cache is not None:
+        return _reasoning_llm_cache
+    chain = _build_chain(_REASONING_PROVIDERS)
     if chain is None:
-        LOGGER.error("get_llm_no_provider_configured")
+        LOGGER.error("get_reasoning_llm_no_provider_configured")
         return None
-    LOGGER.info("get_llm_fallback_chain_built", members=chain._names)
-    _llm_cache = chain
-    return _llm_cache
+    LOGGER.info("get_reasoning_llm_fallback_chain_built", members=chain._names)
+    _reasoning_llm_cache = chain
+    return _reasoning_llm_cache
 
 
-def get_safeguard_llm() -> _FallbackLLM | None:
+# Backward compatible aliases for the reasoning tier
+get_llm = get_reasoning_llm
+get_planner_llm = get_reasoning_llm
+
+
+def get_intent_llm() -> _FallbackLLM | None:
     """
-    Return the fallback LLM chain specifically for safety grading (Guard models).
+    Return the fallback LLM chain for intent classification (`intent_node`).
+
+    Prioritizes Gemini Flash Lite for fast and cost-effective intent routing,
+    falling back immediately to Groq 20B / Qwen 27B / NVIDIA without downtime.
     """
-    members: list[Any] = []
-    names: list[str] = []
-    builders: list[Callable[[], Any]] = []
-
-    for provider_name, model, build_fn, provider_prefix in _SAFEGUARD_PROVIDERS:
-        keys = get_provider_keys(provider_prefix)
-        if not keys:
-            LOGGER.debug("safeguard_llm_provider_skip_no_key", provider=provider_name, model=model)
-            continue
-
-        for idx, key in enumerate(keys, 1):
-            try:
-                b_fn = partial(build_fn, model, api_key=key)
-                llm = b_fn()
-                members.append(llm)
-                builders.append(b_fn)
-                key_tag = f"key_{idx}"
-                names.append(f"{provider_name}/{model} ({key_tag})")
-                LOGGER.info(
-                    "safeguard_llm_provider_ready",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    position=len(members),
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "safeguard_llm_provider_init_failed",
-                    provider=provider_name,
-                    model=model,
-                    key_index=idx,
-                    error=str(exc)[:200],
-                )
-
-    if not members:
-        LOGGER.error("safeguard_llm_no_provider_configured")
+    global _intent_llm_cache
+    if _intent_llm_cache is not None:
+        return _intent_llm_cache
+    chain = _build_chain(_INTENT_PROVIDERS)
+    if chain is None:
+        LOGGER.error("get_intent_llm_no_provider_configured")
         return None
+    LOGGER.info("get_intent_llm_fallback_chain_built", members=chain._names)
+    _intent_llm_cache = chain
+    return _intent_llm_cache
 
-    LOGGER.info("safeguard_llm_fallback_chain_built", members=names)
-    return _FallbackLLM(members, names, builders)
+
+def get_critic_llm() -> _FallbackLLM | None:
+    """
+    Return the fallback LLM chain for evaluating and critiquing draft answers
+    (`critic_node`, `reflection_node`).
+
+    Prioritizes strong non-Gemini models (Groq 120B, Groq 20B, Groq Qwen 27B, NVIDIA)
+    to protect Gemini rate limits while preserving high critique quality.
+    Gemini is only consulted as an emergency tail fallback if all non-Gemini providers fail.
+    """
+    global _critic_llm_cache
+    if _critic_llm_cache is not None:
+        return _critic_llm_cache
+    chain = _build_chain(_CRITIC_PROVIDERS)
+    if chain is None:
+        LOGGER.error("get_critic_llm_no_provider_configured")
+        return None
+    LOGGER.info("get_critic_llm_fallback_chain_built", members=chain._names)
+    _critic_llm_cache = chain
+    return _critic_llm_cache
+
+
+# Backward compatible alias for evaluation
+get_evaluation_llm = get_critic_llm
 
 
 def get_small_llm() -> _FallbackLLM | None:
     """
-    Return the fallback LLM chain prioritizing small/fast models.
+    Return the fallback LLM chain prioritizing fast, lightweight non-Gemini models.
 
-    Builds the chain once and caches it at module level.
-    Iterates through Groq, OpenRouter, NVIDIA, and Ollama first,
-    falling back to Gemini only if no fast models are available.
+    Used by memory extraction, memory retrieval reranking, conflict resolution,
+    conversation summarization, and light subgraphs.
+    Prioritizes Groq 20B / Groq Qwen 27B / NVIDIA Llama 11B, with Gemini Flash Lite
+    only as an emergency tail fallback.
     """
     global _small_llm_cache
     if _small_llm_cache is not None:
         return _small_llm_cache
-
-    small_providers = [p for p in _SMALL_PROVIDERS if p[0] != "gemini"]
-    gemini_providers = [p for p in _SMALL_PROVIDERS if p[0] == "gemini"]
-    reordered_providers = small_providers + gemini_providers
-
-    chain = _build_chain(reordered_providers)
+    chain = _build_chain(_SMALL_PROVIDERS)
     if chain is None:
-        LOGGER.error("small_llm_no_provider_configured")
+        LOGGER.error("get_small_llm_no_provider_configured")
         return None
-
-    LOGGER.info("small_llm_fallback_chain_built", members=chain._names)
+    LOGGER.info("get_small_llm_fallback_chain_built", members=chain._names)
     _small_llm_cache = chain
     return _small_llm_cache
 
 
+# Semantic aliases for the fast/small tier
+get_fast_llm = get_small_llm
+get_memory_llm = get_small_llm
+
+
+def get_safeguard_llm() -> _FallbackLLM | None:
+    """
+    Return the fallback LLM chain for safety and harm screening (`grader_node`).
+
+    Prioritizes Groq Safeguard 20B, Groq 20B, NVIDIA Guard, and OpenRouter,
+    with Gemini Flash Lite only as an emergency tail fallback.
+    """
+    global _safeguard_llm_cache
+    if _safeguard_llm_cache is not None:
+        return _safeguard_llm_cache
+    chain = _build_chain(_SAFEGUARD_PROVIDERS)
+    if chain is None:
+        LOGGER.error("get_safeguard_llm_no_provider_configured")
+        return None
+    LOGGER.info("get_safeguard_llm_fallback_chain_built", members=chain._names)
+    _safeguard_llm_cache = chain
+    return _safeguard_llm_cache
+
+
 def clear_llm_cache():
     """Clear all cached LLM chain instances (useful for testing or key rotation)."""
-    global _llm_cache, _small_llm_cache, _safeguard_llm_cache
-    _llm_cache = None
+    global _reasoning_llm_cache, _intent_llm_cache, _critic_llm_cache, _small_llm_cache, _safeguard_llm_cache
+    _reasoning_llm_cache = None
+    _intent_llm_cache = None
+    _critic_llm_cache = None
     _small_llm_cache = None
     _safeguard_llm_cache = None
     LOGGER.info("llm_cache_cleared")
 
 
 def get_llm_status() -> dict:
-    """Return diagnostic info about which providers and keys are available."""
-    available = []
-    for provider_name, model, _build_fn, provider_prefix in _LARGE_PROVIDERS:
-        keys = get_provider_keys(provider_prefix) if provider_name != "ollama" else [os.getenv("OLLAMA_BASE_URL", "")]
-        keys = [k for k in keys if k]
-        available.append(
-            {
+    """Return diagnostic info about which providers and keys are available across groups."""
+    groups = {
+        "reasoning": _REASONING_PROVIDERS,
+        "intent": _INTENT_PROVIDERS,
+        "critic": _CRITIC_PROVIDERS,
+        "small": _SMALL_PROVIDERS,
+        "safeguard": _SAFEGUARD_PROVIDERS,
+    }
+    status: dict[str, Any] = {"groups": {}}
+    all_available = []
+
+    for group_name, providers in groups.items():
+        prov_status = []
+        for provider_name, model, _build_fn, provider_prefix in providers:
+            keys = get_provider_keys(provider_prefix) if provider_name != "ollama" else [os.getenv("OLLAMA_BASE_URL", "")]
+            keys = [k for k in keys if k]
+            info = {
                 "provider": provider_name,
                 "model": model,
                 "configured": bool(keys),
                 "key_count": len(keys),
             }
-        )
-    return {
-        "providers": available,
-        "active_count": sum(1 for p in available if p["configured"]),
-    }
+            prov_status.append(info)
+            if group_name == "reasoning":
+                all_available.append(info)
+
+        status["groups"][group_name] = {
+            "providers": prov_status,
+            "active_count": sum(1 for p in prov_status if p["configured"]),
+        }
+
+    # Backward compatibility with top-level fields
+    status["providers"] = all_available
+    status["active_count"] = sum(1 for p in all_available if p["configured"])
+    return status
